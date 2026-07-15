@@ -27,9 +27,9 @@ set -u
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'
     BLUE=$'\033[0;34m'; PURPLE=$'\033[0;35m'; CYAN=$'\033[0;36m'
-    BOLD=$'\033[1m'; DIM=$'\033[2m'; NC=$'\033[0m'
+    BOLD=$'\033[1m'; DIM=$'\033[2m'; REV=$'\033[7m'; NC=$'\033[0m'
 else
-    RED=; GREEN=; YELLOW=; BLUE=; PURPLE=; CYAN=; BOLD=; DIM=; NC=
+    RED=; GREEN=; YELLOW=; BLUE=; PURPLE=; CYAN=; BOLD=; DIM=; REV=; NC=
 fi
 
 # Where pattern files are fetched from when no local copy is found.
@@ -101,7 +101,7 @@ while [ $# -gt 0 ]; do
         -p|--projects) PROJECTS_ENABLED=1 ;;
         --patterns)   shift; PATTERNS_SRC="${1:-}" ;;
         --patterns=*) PATTERNS_SRC="${1#*=}" ;;
-        --no-color)   RED=; GREEN=; YELLOW=; BLUE=; PURPLE=; CYAN=; BOLD=; DIM=; NC=; ;;
+        --no-color)   RED=; GREEN=; YELLOW=; BLUE=; PURPLE=; CYAN=; BOLD=; DIM=; REV=; NC=; ;;
         -h|--help)    usage; exit 0 ;;
         *) echo "${RED}Unknown option: $1${NC}"; echo; usage; exit 1 ;;
     esac
@@ -1081,15 +1081,70 @@ clip_plain() {
     else printf '%s…' "${s:0:$((max - 1))}"; fi
 }
 
+# _k_add <cap> <label> — append one "KEY label" pair to the line being built by
+# build_keys_line. Writes both forms in lockstep: _S is styled, _P is a plain
+# shadow of the same display width, since _S is unmeasurable (its escapes carry
+# no columns). A cap is ${#cap}+2 wide in BOTH modes — reverse video pads with a
+# space either side, --no-color brackets it — so _P's " cap " matches each.
+_k_add() {
+    local cap="$1" lab="$2"
+    [ -n "$_P" ] && { _S="$_S · "; _P="$_P · "; }
+    _S="$_S${_ko}${cap}${_kc}"; _P="$_P ${cap} "
+    [ -n "$lab" ] && { _S="$_S ${DIM}${lab}${NC}"; _P="$_P ${lab}"; }
+    return 0
+}
+
+# build_keys_line <cols> — build the shortcut hint line to fit <cols> on ONE
+# physical line. Sets _S (styled, ready to print) and _P (plain, for measuring).
+#
+# This line cannot be clip_plain'd like the item rows and the description: its
+# right edge holds `q quit`, the one key a user must never lose. So it degrades
+# by tier instead of by truncation, shedding first the labels whose key already
+# implies them (↑↓ move, Enter details), then the rest. Widths are mode-
+# independent, so --no-color picks the same tier.
+#   1: everything spelled out          95 cols (81 under --dry-run)
+#   2: self-evident labels dropped     76 cols (64)
+#   3: caps only                       44 cols (38)
+build_keys_line() {
+    local cols="$1" tier
+    if [ -n "$REV" ]; then _ko="${REV} "; _kc=" ${NC}"; else _ko="["; _kc="]"; fi
+    for tier in 1 2 3; do
+        local sp="Space" en="Enter" mv="move" tg="toggle" asn="all/safe/none" cl="clean" qt="quit" dt
+        if [ "$DRY_RUN" -eq 1 ]; then dt="paths"; else dt="details"; fi
+        case "$tier" in
+            2) sp="Spc"; en="↵"; mv=""; dt="" ;;
+            3) sp="Spc"; en="↵"; mv=""; dt=""; tg=""; asn=""; cl=""; qt="" ;;
+        esac
+        _S=""; _P=""
+        _k_add "↑↓" "$mv"
+        _k_add "$sp" "$tg"
+        # a/s/n share one label, so they are joined by / rather than the · separator
+        _S="$_S · ${_ko}a${_kc}/${_ko}s${_kc}/${_ko}n${_kc}"
+        _P="$_P ·  a / s / n "
+        [ -n "$asn" ] && { _S="$_S ${DIM}${asn}${NC}"; _P="$_P ${asn}"; }
+        _k_add "$en" "$dt"
+        # `c` is absent under --dry-run: run_cleanup would refuse to delete anyway.
+        [ "$DRY_RUN" -eq 1 ] || _k_add "c" "$cl"
+        _k_add "q" "$qt"
+        [ "${#_P}" -le "$cols" ] && break
+    done
+    return 0
+}
+
 render_menu() {
     local rows cols; rows=$(term_rows); cols=$(term_cols)
     case "$rows" in ''|*[!0-9]*) rows=24 ;; esac
     case "$cols" in ''|*[!0-9]*) cols=80 ;; esac
-    # Fixed chrome is exactly 6 lines (title, status, keys, ↑-scroll, ↓-scroll,
-    # description); every other terminal row is given to the item list. Item rows
-    # and the description are clipped to the terminal width below, so each stays a
-    # single physical line and this count is exact — the list fills the screen.
-    local viewport=$((rows - 6))
+    # Chrome is title, status, keys, ↑-scroll, ↓-scroll, description; every other
+    # terminal row goes to the item list. Item rows and the description are clipped
+    # to the terminal width below and the keys line is tier-fitted to it, so each
+    # is one physical line and this count is exact — the list fills the screen.
+    # keys_h is measured rather than assumed to be 1: below ~44 columns even the
+    # narrowest tier wraps, and the list must still not overrun the screen.
+    build_keys_line "$cols"
+    local keys_h=$(( (${#_P} + cols - 1) / cols ))
+    [ "$keys_h" -lt 1 ] && keys_h=1
+    local viewport=$((rows - 5 - keys_h))
     [ "$viewport" -lt 3 ] && viewport=3
     if [ "$CURSOR" -lt "$SCROLL" ]; then SCROLL=$CURSOR; fi
     if [ "$CURSOR" -ge $((SCROLL + viewport)) ]; then SCROLL=$((CURSOR - viewport + 1)); fi
@@ -1100,11 +1155,10 @@ render_menu() {
     [ "$DRY_RUN" -eq 1 ] && tag="   ${YELLOW}DRY RUN — nothing will be deleted${NC}"
     buf+="${BLUE}🧹 ${BOLD}CleanDevMac${NC}${BLUE} — reclaim your disk${NC}${tag}\033[K\n"
     buf+="Selected ${BOLD}${sel_c}${NC}/${N}   Reclaimable ${BOLD}${GREEN}$(human_kb "$sel_kb")${NC}\033[K\n"
-    if [ "$DRY_RUN" -eq 1 ]; then
-        buf+="[${DIM}↑↓${NC}] move · [${BOLD}Space${NC}] toggle · [${BOLD}a${NC}]/[${BOLD}s${NC}]/[${BOLD}n${NC}] all/safe/none · [${BOLD}Enter${NC}] paths · [${BOLD}q${NC}] quit\033[K\n"
-    else
-        buf+="[${DIM}↑↓${NC}] move · [${BOLD}Space${NC}] toggle · [${BOLD}a${NC}]/[${BOLD}s${NC}]/[${BOLD}n${NC}] all/safe/none · [${BOLD}Enter${NC}] details · [${BOLD}c${NC}] clean · [${BOLD}q${NC}] quit\033[K\n"
-    fi
+    # Keys render as reverse-video caps against dim labels so they read at a
+    # glance rather than blending into the sentence; build_keys_line (above)
+    # already sized _S to fit this width on one line.
+    buf+="${_S}\033[K\n"
 
     local i last=$((SCROLL + viewport - 1)); [ "$last" -ge "$N" ] && last=$((N - 1))
     if [ "$SCROLL" -gt 0 ]; then buf+="   ${DIM}↑ ${SCROLL} more above${NC}\033[K\n"; else buf+="\033[K\n"; fi
