@@ -7,7 +7,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS-111111?style=flat-square)](https://github.com/cleandevmac/cdm)
 [![Donate](https://img.shields.io/badge/donate-PayPal-00457C?style=flat-square&logo=paypal&logoColor=white)](https://www.paypal.com/paypalme/hoangnc)
 
-A terminal UI that finds the dev caches, build artifacts and leftover app data eating your disk, shows you exactly what and how big — and deletes only what you tick.
+**CleanDevMac** — `cdm` on your command line — is a terminal UI that finds the dev caches, build artifacts and leftover app data eating your disk, shows you exactly what and how big, and deletes only what you tick.
 
 The downloads badge counts fetches of the `cdm` release asset. Every `curl` install below hits that asset, so it is the real usage counter for this tool.
 
