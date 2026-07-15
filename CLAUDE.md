@@ -124,6 +124,59 @@ the rest of the program and break the pipe. The script opens `/dev/tty` on fd 3,
 only when it's a terminal, and otherwise uses `/dev/null` so reads hit EOF (treated as "no answer")
 instead of consuming the script as keystrokes. Every interactive read uses `<&3`.
 
+### The terminal *size* also comes from fd 3
+
+Same reason, and it is easy to get wrong because the wrong version fails silently rather than
+loudly. `term_rows`/`term_cols` run `stty size <&3`. Not fd 0 — piped, that is the script, so `stty`
+just errors. And the `tput lines/cols` fallback cannot cover for it: tput sizes its *output* fd,
+and both callers run inside `$(...)` where fd 1 is a pipe, so tput answers from static terminfo —
+a plausible-looking **24x80**. `$LINES`/`$COLUMNS` are empty too, since bash only maintains them
+when interactive. So every piped run — i.e. very nearly every run — laid out at 24x80 and ignored
+the rest of the window, on every terminal, for everyone.
+
+Two lessons worth keeping: any "what size is my terminal" fallback chain that ends in a *constant*
+will look like it works, so test it in a real pty at a non-default size; and a 24x80 assumption is
+not merely wasteful on a big window — on a window **shorter than 24 rows** the frame overflows and
+the terminal scrolls on every repaint, which is what stacked copies of the menu in the scrollback.
+
+### Measure text in display columns, never in characters or bytes
+
+Three different numbers, and the layout only ever wants the third:
+
+- `${#s}` counts **characters** — but only under a UTF-8 `LC_CTYPE`, which is why `cdm` pins one at
+  the top. Under a C locale it counts **bytes** and `${s:0:n}` will slice a multibyte character in
+  half; every rule `desc` has an em dash in it, so that was a visible mojibake bug for anyone
+  arriving without a `LANG` (plain ssh, launchd, Terminal with the locale box unchecked).
+- `printf '%-36s'` pads to **bytes**, so it silently short-changes any non-ASCII name — `Tiếng-Việt`
+  is 10 characters but 14 bytes and got *no* padding at all. The row builder pads by hand instead.
+- `dwidth` gives **display columns**, the only unit the terminal lays out in. CJK, Kana, Hangul and
+  emoji are two columns each. It classifies on the UTF-8 lead byte (`>= 0xE3` is wide), which keeps
+  Latin/Vietnamese/Greek/Cyrillic correctly at one, and takes a free fast path on pure-ASCII strings
+  so the common case costs nothing. `clip_plain`, `shorten_left` and the name-column budget all go
+  through it — mixing units there means a row renders wider than it was budgeted, wraps, and scrolls
+  the frame on every repaint.
+
+### The menu is a fixed-height frame — mind the last newline
+
+`render_menu` emits exactly `rows` lines when the list overflows, and the last one deliberately
+carries **no trailing newline**: a newline on the bottom row scrolls the screen, which would drag
+the title off the top on every frame. It repaints with `\033[H` … `\033[J` and each line ends in
+`$K` — deliberately *not* `\033[2J`, which on Terminal.app/iTerm2 scrolls the outgoing frame
+into the scrollback instead of discarding it. The menu draws on the alternate screen
+(`\033[?1049h`), and `leave_tui` restores; anything printed after `leave_tui` survives the run,
+anything before it dies with the alternate screen — so parting messages come after.
+
+### The frame is data, not a format string
+
+`$buf` is built from the `ESC`/`K`/`NL` **literals** defined under the colour block, and emitted
+with `printf '%s' "$buf"`. Never `printf "$buf"`, and never rebuild it from escape *text* like
+`"\033[K\n"` — the frame is assembled out of category names and repo paths, and bash's printf reads
+backslashes in a format string. A directory legitimately named `ha\nck` then emits a real newline
+(the frame outgrows `rows` and the terminal scrolls on every repaint) and one named `esc\033[41m`
+injects raw escape sequences from a filename. `%` needs no escaping for the same reason, which is
+why the old `${line//%/%%}` dance is gone. Row text goes through `printf` as *arguments*, which is
+always safe; the two bare `printf '\033[H'` / `'\033[J'` calls are constant formats with no data.
+
 ### Performance landmine in `register_paths`
 
 Glob expansion deliberately uses bash's own pathname expansion with `IFS` emptied, rather than
