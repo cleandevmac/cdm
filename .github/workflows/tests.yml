@@ -1,0 +1,56 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - cdm
+      - rules/**
+      - tests/**
+      - .github/workflows/tests.yml
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # macOS is not a preference here, it is the only runner that can answer the
+    # question. cdm refuses to run on anything but Darwin (cdm:127), parse_json_file
+    # shells out to JXA, and — the part that bites — macOS is the only runner whose
+    # /bin/bash is 3.2, which is cdm's compatibility floor.
+    #
+    # Worth knowing why that last one matters: the release job validates with
+    # `bash -n` on ubuntu, i.e. bash 5 checking a bash 3.2 target, and that gate
+    # cannot see this class of bug. `declare -A m` passes `bash -n` on bash 5 AND
+    # exits 0 on bash 3.2, having silently written to the wrong variable. Only
+    # executing the code on a real 3.2 catches it. tests/test_portability.sh greps
+    # for the known bash-4 idioms; running here is what backstops the rest.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report the bash under test
+        run: |
+          /bin/bash -c 'echo "/bin/bash is $BASH_VERSION"'
+          test "$(/bin/bash -c 'echo ${BASH_VERSINFO[0]}')" = "3" \
+            || echo "::warning::/bin/bash is no longer 3.2 — cdm's floor is now unverified by CI"
+
+      - name: Syntax check
+        run: bash -n cdm
+
+      - name: Unit tests
+        run: ./tests/run.sh
+
+      - name: Mutation check — prove the tests can actually fail
+        # A green suite proves nothing if its assertions cannot fail. This breaks
+        # cdm on purpose and requires the suite to notice each time.
+        run: ./tests/mutate.sh
+
+      - name: Smoke — the piped path users actually run
+        # `./cdm --dry-run` can pass while `curl … | bash` is broken: piped, cdm's
+        # $0 is "bash" and BASH_SOURCE is unset, which is what steers rule
+        # resolution to the network. Exercise the real entrypoint, not just the file.
+        # SIGPIPE on a short-circuiting flag is expected — bash exits without
+        # draining the pipe — so only the parse is asserted here.
+        run: |
+          cat cdm | bash -s -- --help > /dev/null
+          echo "piped --help OK"
