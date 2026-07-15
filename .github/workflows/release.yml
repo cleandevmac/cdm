@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - cdm
+      - rules/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Serialize releases: queued runs wait instead of racing to claim the same tag.
+# cancel-in-progress is deliberately false — a cancelled run could leave a tag
+# without a release attached to it.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need full tag list to pick the next free version
+
+      - name: Validate cdm before it can become "latest"
+        run: |
+          set -euo pipefail
+          test -s cdm || { echo "::error::cdm is missing or empty"; exit 1; }
+          # read, not `head | grep -q`: a SIGPIPE'd head would trip pipefail and
+          # fail the build on a perfectly good script.
+          IFS= read -r first_line < cdm || true
+          case "$first_line" in
+            '#!'*) ;;
+            *) echo "::error::cdm does not start with a #! line (got: ${first_line:-<empty>})"; exit 1 ;;
+          esac
+          bash -n cdm || { echo "::error::cdm failed syntax check — refusing to release"; exit 1; }
+          echo "cdm passed: non-empty, shebang present, syntax OK"
+
+      - name: Derive version
+        id: version
+        run: |
+          set -euo pipefail
+          git fetch --tags --force --quiet
+          DATE="v$(date -u +%Y.%m.%d)"
+          # Claim the lowest unused ordinal for today, so the Nth run of the day
+          # gets vYYYY.MM.DD.N regardless of commit, re-run, or manual dispatch.
+          n=1
+          while git rev-parse -q --verify "refs/tags/${DATE}.${n}" >/dev/null \
+             || gh release view "${DATE}.${n}" >/dev/null 2>&1; do
+            n=$((n + 1))
+          done
+          echo "tag=${DATE}.${n}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${DATE}.${n}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.version.outputs.tag }}" cdm \
+            --title "${{ steps.version.outputs.tag }}" \
+            --target "$GITHUB_SHA" \
+            --generate-notes \
+            --latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
