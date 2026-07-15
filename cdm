@@ -165,6 +165,13 @@ fi
 LOG_DIR="$HOME/.cleandevmac"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG_FILE="$LOG_DIR/clean.log"
+# The receipt of every clean ever run is appended to one file, so it only grows.
+# A disk-cleanup tool has no business being the thing quietly eating the disk —
+# cap it, keeping the most recent entries, which are the ones anyone ever reads
+# ("what did it delete just now?"). Rotation happens at the single point of
+# write, in run_cleanup; a scan or a --dry-run never touches the log at all.
+LOG_MAX_BYTES=$((1024 * 1024))
+LOG_KEEP_BYTES=$((256 * 1024))
 
 SCAN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cdm.XXXXXX")
 # enter_tui / leave_tui — move the menu on and off the alternate screen.
@@ -195,6 +202,37 @@ cleanup_on_exit() {
 }
 trap cleanup_on_exit EXIT
 trap 'exit 130' INT TERM
+# HUP matters as much as INT here: closing the terminal window mid-scan is a
+# normal way to abandon a run, and untrapped it kills the shell outright — the
+# EXIT trap never fires and SCAN_DIR is stranded. sweep_stale_scan_dirs cleans
+# up after the cases even this cannot catch (SIGKILL, a panic).
+trap 'exit 129' HUP
+
+# sweep_stale_scan_dirs — remove the SCAN_DIRs that earlier runs stranded.
+#
+# cleanup_on_exit removes this run's, but no EXIT trap can run if the process is
+# killed outright, so a killed run leaves an empty cdm.XXXXXX behind forever and
+# they accumulate. A disk-cleanup tool quietly littering /var/folders is not a
+# joke that stays funny, so each run tidies up after the ones before it.
+#
+# This is the one rm in the script that does NOT go through is_safe_target, and
+# it cannot: that gate demands containment under $HOME, while these live in
+# $TMPDIR by construction. What replaces it is that the target is neither user
+# data nor pattern-derived — the glob is this script's own mktemp template,
+# literal and fixed-width, so it matches only directories cdm itself created.
+# Nothing read from a rules file reaches this.
+sweep_stale_scan_dirs() {
+    local d
+    for d in "${TMPDIR:-/tmp}"/cdm.??????; do
+        [ -d "$d" ] || continue
+        [ "$d" = "${SCAN_DIR:-}" ] && continue
+        # An hour, not a day: no cdm run lasts an hour, so this cannot race a
+        # sibling that is scanning right now, while still reclaiming today's.
+        [ -n "$(find "$d" -maxdepth 0 -mmin +60 2>/dev/null)" ] || continue
+        rm -rf "$d" 2>/dev/null
+    done
+    return 0
+}
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -1543,6 +1581,34 @@ print_plan() {
     echo "${BLUE}=============================================${NC}"
 }
 
+# rotate_log — cap clean.log, keeping the newest LOG_KEEP_BYTES.
+#
+# Deliberately truncate-in-place rather than clean.log.1 + clean.log.2: a
+# rotation scheme that keeps N generations still grows without bound in the
+# only dimension that matters here (total bytes on disk), which is the thing
+# this exists to stop. One file, one ceiling.
+rotate_log() {
+    [ -f "$LOG_FILE" ] || return 0
+    local sz
+    # stat -f%z, not `wc -c`: no fork to strip the padding wc pads with, and
+    # this script is macOS-only anyway.
+    sz=$(stat -f%z "$LOG_FILE" 2>/dev/null) || return 0
+    case "$sz" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$sz" -le "$LOG_MAX_BYTES" ] && return 0
+
+    local tmp="$LOG_DIR/.clean.log.$$"
+    {
+        echo "=================================================="
+        echo "Truncated $(date): older entries dropped at ${LOG_MAX_BYTES} bytes."
+        echo "=================================================="
+        # `tail -c` slices at a byte offset and so lands mid-line; drop that
+        # leading partial record rather than leave a corrupt first entry.
+        tail -c "$LOG_KEEP_BYTES" "$LOG_FILE" 2>/dev/null | sed '1d'
+    } > "$tmp" 2>/dev/null && mv "$tmp" "$LOG_FILE" 2>/dev/null
+    rm -f "$tmp" 2>/dev/null
+    return 0
+}
+
 run_cleanup() {
     printf '\033[?25h'
     [ "$NON_INTERACTIVE" -eq 0 ] && printf '\033[H\033[2J'
@@ -1574,6 +1640,7 @@ run_cleanup() {
     fi
 
     echo
+    rotate_log
     {
         echo "=================================================="
         echo "CleanDevMac run: $(date)"
@@ -1659,6 +1726,10 @@ offer_project_scan() {
 if [ "${CDM_LIB:-}" = "1" ]; then
     return 0 2>/dev/null || exit 0
 fi
+
+# Deliberately below the CDM_LIB hook: sourcing this script for a test must not
+# reach into the real $TMPDIR and start deleting things.
+sweep_stale_scan_dirs
 
 # ---- Resolve & stage pattern files -----------------------------------------
 if ! resolve_patterns; then
