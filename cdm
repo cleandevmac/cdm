@@ -35,6 +35,10 @@ fi
 # Where pattern files are fetched from when no local copy is found.
 REMOTE_BASE="${CDM_REMOTE:-https://raw.githubusercontent.com/cleandevmac/cdm/main/rules}"
 
+# Shown in --help and once after a clean that freed something. Never fetched,
+# never pinged — it is a string this script prints, nothing more.
+DONATE_URL="https://www.paypal.com/paypalme/hoangnc"
+
 # ---- Options ---------------------------------------------------------------
 DRY_RUN=0
 ASSUME_YES=0
@@ -84,6 +88,9 @@ ${YELLOW}Safety:${NC}
     hard-deleted, so you can undo.
   • Nothing runs until you review an itemized plan and confirm.
   • App sandboxes and Apple/system-owned data are never touched.
+
+${YELLOW}Free & MIT.${NC} If cdm gave you your disk back, you can buy me a coffee:
+  ${CYAN}${DONATE_URL}${NC}
 EOF
 }
 
@@ -1348,6 +1355,10 @@ EOF
         fi
     done
     echo "Log: ${YELLOW}${LOG_FILE}${NC}"
+    # Shown only here — after a clean that actually freed something. Never on a
+    # plain scan, a dry run, or --help-less startup: asking for money before
+    # delivering anything is how a good tool starts feeling like adware.
+    echo "${DIM}Got your disk back? ${NC}${CYAN}${DONATE_URL}${NC}"
     return 0
 }
 

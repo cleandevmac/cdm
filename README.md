@@ -5,6 +5,7 @@
 [![Stars](https://img.shields.io/github/stars/cleandevmac/cdm?style=flat-square&label=stars&color=d29922)](https://github.com/cleandevmac/cdm/stargazers)
 [![License](https://img.shields.io/github/license/cleandevmac/cdm?style=flat-square&label=license&color=8957e5)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS-111111?style=flat-square)](https://github.com/cleandevmac/cdm)
+[![Donate](https://img.shields.io/badge/donate-PayPal-00457C?style=flat-square&logo=paypal&logoColor=white)](https://www.paypal.com/paypalme/hoangnc)
 
 A terminal UI that finds the dev caches, build artifacts and leftover app data eating your disk, shows you exactly what and how big — and deletes only what you tick.
 
@@ -109,6 +110,14 @@ Each category is an object with `icon`, `name`, `desc`, `paths`, `default` (pre-
 | --- | --- |
 | `CDM_REMOTE` | Base URL rules are fetched from when no local copy is found |
 | `CDM_PATTERNS` | Rule source — a local directory or a base URL (same as `--patterns`) |
+
+## Support
+
+cdm is free and MIT, and it stays that way — no paid tier, no telemetry, nothing held back. If it gave you your disk back and you feel like buying me a coffee:
+
+**[paypal.me/hoangnc](https://www.paypal.com/paypalme/hoangnc)**
+
+Starring the repo or telling another developer about it helps just as much.
 
 ## Credits
 
