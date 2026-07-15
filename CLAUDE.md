@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-CleanDevMac (`cdm`) is a single ~1500-line bash script that reclaims disk space on macOS from
+CleanDevMac (`cdm`) is a single ~1850-line bash script that reclaims disk space on macOS from
 developer caches, build artifacts, per-repo project junk, Docker/Podman, and orphaned app data.
-`cdm` is the whole program — `rules/*.json` is its data. There is no build step, no dependency
-manifest, and no test framework.
+`cdm` is the whole program — `rules/*.json` is its data. There is no build step and no dependency
+manifest. Tests live in `tests/` and are plain bash with no framework behind them (see Commands).
 
 Users run it by piping a GitHub release asset straight into bash:
 
@@ -29,7 +29,7 @@ bash -n cdm                  # syntax check — the same guard CI runs before re
 ./cdm --patterns ./rules     # force a specific rule source
 ```
 
-Exercising a single unit: source the script without running it. The test hook at the bottom of
+Exercising a single unit: source the script without running it. The test hook near the bottom of
 `cdm` returns early when `CDM_LIB=1`, so functions load into your shell with no scan and no TUI.
 
 ```bash
@@ -38,6 +38,35 @@ SCAN_DIR=$(mktemp -d)        # most functions need this set
 resolve_patterns && ls "$PATTERNS_DIR"
 is_safe_target "$HOME/Documents" && echo REACHABLE || echo "correctly refused"
 ```
+
+### Tests
+
+```bash
+./tests/run.sh               # the whole suite, ~4s
+./tests/run.sh safe_target   # only files matching a substring
+./tests/mutate.sh            # break cdm on purpose; the suite must notice
+```
+
+`tests/lib.sh` is that same `CDM_LIB` hook with a sandboxed `$HOME` wrapped around it, plus three
+assertions (`assert_eq`, `assert_ok`, `assert_fail`). No framework, for the same reason there are no
+dependencies: a suite needing `bats` installed would be testing a machine no user has. Each file
+runs under `/bin/bash` — 3.2, the floor — in its own process.
+
+Two ordering constraints are load-bearing and documented at length in `lib.sh`: `$HOME` must be
+exported *before* `cdm` is sourced (it snapshots `HOME_P` at source time, and `is_safe_target`
+compares against that), and the cleanup trap must be armed *before* the source and again *after*
+(cdm installs its own `EXIT` trap, clobbering yours).
+
+`tests/mutate.sh` is the part that matters. A passing suite proves nothing on its own — an assertion
+that cannot fail reads exactly like coverage — so each mutation breaks cdm one edit at a time and
+requires the named test file to fail. It rejects mutations that stop matching (a stale pattern would
+otherwise "pass" forever while testing nothing) and ones that break the parse rather than behavior.
+Adding a test without adding its mutation is half the job.
+
+Note that not every mutation is catchable. `is_safe_target`'s early guards are redundant with its
+lexical + physical containment pair, so deleting one changes no observable behavior — those are
+*equivalent mutants*, and `mutate.sh` documents why they are deliberately absent rather than listing
+holes the tests can never close.
 
 `shellcheck` is not installed and is not a dependency — don't add it to a workflow without asking.
 
@@ -206,7 +235,15 @@ name, and the README's downloads badge counts fetches of that asset.
   and no phone-home; the donate URL is a string it prints. Keep it that way.
 - The donate line appears only in `--help` and once after a clean that actually freed something —
   never on a scan or a dry run.
-- Every run appends to `~/.cleandevmac/clean.log`.
+- Every clean appends a receipt to `~/.cleandevmac/clean.log`; a scan or a `--dry-run` never writes
+  to it. `rotate_log` caps it at 1 MiB, keeping the newest 256 KiB — the tool that reclaims disk has
+  no business being the thing quietly consuming it. Same reasoning behind `sweep_stale_scan_dirs`:
+  `cleanup_on_exit` removes this run's `SCAN_DIR`, but no `EXIT` trap runs when the process is
+  killed outright (SIGKILL, or SIGHUP when the terminal closes), so each run also sweeps the
+  `$TMPDIR/cdm.XXXXXX` dirs stranded by earlier ones. That sweep is the one `rm` that does not pass
+  `is_safe_target` — it cannot, since `$TMPDIR` is not under `$HOME` — so its fixed-width glob over
+  cdm's own mktemp template *is* the safety boundary. Nothing rule-derived reaches it. Widen that
+  glob and `tests/test_scan_dir_sweep.sh` fails.
 - The landing page lives in a separate repo (`cleandevmac/cleandevmac.github.io`) and hardcodes the
   run command, the rule schema, and the TUI keybindings. Changing any of those here means updating
   it there.
