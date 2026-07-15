@@ -15,13 +15,13 @@ Site: **<https://cleandevmac.github.io>**
 
 macOS only. Pure bash, no dependencies. Zero telemetry — the only network call `cdm` ever makes is fetching its own rule JSON.
 
-## Install / Run
+## Run it
 
 ```bash
 curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash
 ```
 
-Nothing is installed. The script runs straight from the pipe, scans, and hands you the TUI.
+There is no install step. The script runs straight from the pipe, scans, and hands you the TUI. When it exits, nothing of it is left on your Mac.
 
 Dry run first — scans and reports, deletes nothing:
 
@@ -29,7 +29,9 @@ Dry run first — scans and reports, deletes nothing:
 curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash -s -- -n
 ```
 
-If you want it around for repeat use, drop it on your `PATH` and call it as `cdm`:
+## Keep it around (optional)
+
+Only do this if you want to run `cdm` again without the URL. It is the one thing here that does leave a file behind:
 
 ```bash
 mkdir -p ~/.local/bin
@@ -38,7 +40,7 @@ chmod +x ~/.local/bin/cdm
 cdm
 ```
 
-Make sure `~/.local/bin` is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH"` in your shell rc). Re-run the `curl -o` line to update.
+Make sure `~/.local/bin` is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH"` in your shell rc). Re-run the `curl -o` line to update. To uninstall: `rm ~/.local/bin/cdm`.
 
 ![CleanDevMac](screenshot.png)
 

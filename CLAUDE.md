@@ -155,5 +155,8 @@ name, and the README's downloads badge counts fetches of that asset.
   never on a scan or a dry run.
 - Every run appends to `~/.cleandevmac/clean.log`.
 - The landing page lives in a separate repo (`cleandevmac/cleandevmac.github.io`) and hardcodes the
-  install command, the rule schema, and the TUI keybindings. Changing any of those here means
-  updating it there.
+  run command, the rule schema, and the TUI keybindings. Changing any of those here means updating
+  it there.
+- Nothing "installs" `cdm` — the pipe runs it and leaves nothing behind. Only the optional
+  save-to-`PATH` recipe in the README puts a file on disk, and that section is the only place the
+  word *install* belongs.
