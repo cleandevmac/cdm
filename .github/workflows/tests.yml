@@ -38,11 +38,47 @@ jobs:
         run: bash -n cdm
 
       - name: Unit tests
-        run: ./tests/run.sh
+        # Under five locales, deliberately. Two locale-sensitive bugs have shipped
+        # in cdm — a collation-resolved bracket range in is_ascii, and a comma
+        # decimal separator out of human_kb's awk — and the suite could catch BOTH
+        # as written. It simply never ran anywhere they showed: `LANG=de_DE.UTF-8
+        # ./tests/test_helpers.sh` failed on unmodified main for the life of the
+        # tool. A suite that only ever runs under one developer's locale is one
+        # locale's worth of coverage no matter how many assertions it has.
+        #
+        # The tests that KNOW they are locale-sensitive pin their own locale
+        # (in_locale in tests/lib.sh), which is the real defense — it is
+        # deterministic and mutation-backed. But that only ever covers the hazards
+        # somebody anticipated. This step is the net for the ones nobody did, and
+        # at ~4s a pass it is the cheapest coverage in this file.
+        #
+        # The five are chosen to vary the two axes independently: C is a bare
+        # ssh/launchd (byte ctype, C collation), C.UTF-8 pairs a UTF-8 ctype with C
+        # collation, en_US.UTF-8 is what a Terminal exports, de_DE.UTF-8 is a comma
+        # decimal separator, and an empty environment is `curl … | bash` with
+        # nothing set at all — which is very nearly every real run.
+        run: |
+          set -eu
+          for loc in en_US.UTF-8 C.UTF-8 C de_DE.UTF-8; do
+            echo "::group::tests under LC_ALL=$loc"
+            LC_ALL="$loc" ./tests/run.sh
+            echo "::endgroup::"
+          done
+          echo "::group::tests with no locale variables set at all"
+          env -u LC_ALL -u LANG -u LC_CTYPE -u LC_NUMERIC -u LC_COLLATE ./tests/run.sh
+          echo "::endgroup::"
 
       - name: Mutation check — prove the tests can actually fail
         # A green suite proves nothing if its assertions cannot fail. This breaks
         # cdm on purpose and requires the suite to notice each time.
+        #
+        # Once, not once per locale like the step above: this runs the whole suite
+        # per mutation, so a sweep here costs minutes rather than seconds. It does
+        # not need one — a mutation whose catchability depends on the ambient
+        # locale means some test is trusting the caller's locale instead of pinning
+        # its own (that exact failure has happened here: a mutation survived under
+        # en_US.UTF-8 and was caught under C.UTF-8), and the sweep above is what
+        # surfaces that, at the assertion rather than at the mutant.
         run: ./tests/mutate.sh
 
       - name: Smoke — the piped path users actually run

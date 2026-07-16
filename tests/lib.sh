@@ -116,28 +116,31 @@ assert_fail() {
     fi
 }
 
-# in_locale <locale> <cmd...> — run <cmd> under a locale this suite chooses,
-# rather than the one the developer's shell happens to export.
+# in_locale <locale> <cmd...> — run <cmd> under a locale this suite names, rather
+# than whichever one the developer's shell happens to export. Two locale-sensitive
+# bugs have shipped in cdm (a collation-resolved bracket range in is_ascii, a
+# comma decimal separator out of human_kb's awk), and both hid the same way: the
+# suite only ever ran under one locale. An assertion about locale-dependent
+# behavior has to pin its own.
 #
-# cdm pins LC_CTYPE and deliberately leaves LC_COLLATE to the user, so "which
-# locale is in force" is a real input to any function that matches a pattern —
-# and two bugs have now shipped from a bracket range reading differently under
-# one collation than another (is_ascii, looks_like_bundle_id). A test that does
-# not pin the locale is not testing the guard, it is testing the developer's
-# environment: under LANG=C.UTF-8 the suite passed while CI, on en_US.UTF-8,
-# did not.
+# Three details, each of which silently makes this pass for free if you get it
+# wrong — and "passes for free" is the whole failure mode being defended against:
 #
-# Two traps, both load-bearing, both silent when you get them wrong:
+#   * EXPORT, not a bare assignment. A bare `LC_ALL=de_DE.UTF-8` re-runs setlocale
+#     in THIS shell, which is enough for a bash builtin or a pattern match, but it
+#     is not in the environment — so a command that forks (awk, sort, du) never
+#     sees it and answers in the developer's locale. Against unfixed code that
+#     reads as a pass.
+#   * ASSIGNMENT, not the `LC_ALL=x cmd` prefix form. bash 3.2 re-runs setlocale
+#     when the variable is assigned, but not for the temporary environment of a
+#     FUNCTION call, so the prefix form leaves this shell's own locale untouched —
+#     which is what a caller testing bash-internal behavior (is_ascii) needs.
+#   * the ( ) subshell, so the export cannot leak into every later assertion in
+#     the file: assert_ok runs its command in the CURRENT shell.
 #
-#   * the locale must be set by ASSIGNMENT inside the ( ). The obvious prefix
-#     form — `LC_ALL=en_US.UTF-8 is_ascii abc` — does NOT work: bash 3.2 re-runs
-#     setlocale when the variable is assigned, but not for the temporary
-#     environment of a function call, so that form silently measures the
-#     developer's own collation and passes for free.
-#   * the ( ) is not optional for a second reason: assert_ok/assert_fail run
-#     their command in the CURRENT shell, so a bare assignment would leak into
-#     every later assertion in the file.
-in_locale() { ( LC_ALL="$1"; shift; "$@" ); }
+# The pair is what makes one helper serve both callers: the export reaches forked
+# children, and assigning it (rather than prefixing) still re-inits this shell.
+in_locale() { ( export LC_ALL="$1"; shift; "$@" ); }
 
 # Every test file ends with this; its exit status is what run.sh counts.
 test_summary() {

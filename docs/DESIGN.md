@@ -61,8 +61,10 @@ which is nothing at all over plain ssh, from launchd/cron, or with Terminal's
 and slices text with those two operators, so under a C ctype every rule's
 description gets cut mid-em-dash into a replacement glyph and the keys line
 mis-measures itself. Only LC_CTYPE is set: collation stays the user's business,
-and the `LC_ALL=C sort` calls that need byte order still say so per-command —
-including every `sort -u`, for the reason below.
+and the commands that need a locale of their own — the `LC_ALL=C sort` calls that
+want byte order, including every `sort -u`, and the `LC_ALL=C awk` calls that
+format sizes — still say so per-command. See [`sort -u`](#sort-u-collation) and
+[#numeric-format](#numeric-format) for why each of those stayed per-command.
 
 <a id="sort-u-collation"></a>
 ## `sort -u` compares by collation, not by bytes
@@ -138,6 +140,45 @@ error, no wrong-looking output — just fewer lines than went in, on inputs nobo
 tests with. `sort -u` is the only sort in cdm whose output depends on the
 comparison being byte-exact; plain `sort` merely reorders, and `awk '!seen[$0]++'`
 (used for the same job in `scan_projects`) de-duplicates on bytes and is immune.
+
+<a id="numeric-format"></a>
+## Sizes are formatted under LC_ALL=C, per command
+
+human_kb formats with awk's `printf "%.2f GB"`, and `%f` writes whichever decimal
+separator LC_NUMERIC names. Under a European locale that is a comma, so the menu
+rendered `1,00 GB` — in a UI that is otherwise English throughout. That is the
+argument for pinning rather than localizing: cdm is not translated. The label
+beside that number says "Reclaimable", the receipt it lands in is English, and
+every other number the tool prints is an integer with no separator at all. A
+comma there is not a translation, it is the single localized glyph in an English
+sentence — and it would make the format of `~/.cleandevmac/clean.log` depend on
+which shell happened to launch the run. Localizing the UI is a real project; it
+does not start with the decimal point.
+
+Two things about *how* it is pinned, both load-bearing:
+
+- **LC_ALL, not LC_NUMERIC**, because LC_NUMERIC loses to it. LC_ALL outranks
+  every other LC_* in the process that reads it, so `LC_NUMERIC=C awk` still
+  prints `1,50` for anyone who exports `LC_ALL=de_DE.UTF-8` outright. That same
+  precedence is what sinks the top-level version of this fix: the LC_CTYPE pin
+  above deliberately leaves an exported LC_ALL alone when it already names a
+  UTF-8 locale, so an exported `LC_NUMERIC=C` sitting beside it would be dead on
+  arrival. Making a top-level LC_NUMERIC pin actually bite would mean
+  neutralizing LC_ALL — re-expanding it into the individual categories, to
+  preserve the collation the pin promises to leave the user — which is a lot of
+  machinery to buy a decimal point.
+- **Per-command**, because that is already the convention (`LC_ALL=C sort`), and
+  it leaves the pin's stance where it was: cdm sets one category for its own
+  string math, and anything needing a fixed locale asks at the call site.
+
+Only human_kb needs it. human_to_kb's awk is deliberately left bare: its `%d`
+emits no separator, and the number it parses (`1.8`) is interpolated into the awk
+*source*, where the decimal point is a period regardless of locale. Guarding it
+would add a line that no test could ever fail.
+
+bash's own printf is not an escape hatch either — it reads `%f` through the same
+LC_NUMERIC, and worse, under de_DE it cannot even parse `1.5` as *input*
+(`printf: 1.5: invalid number`); it wants `1,5`.
 
 <a id="fd-3"></a>
 ## Keypresses come from fd 3, never fd 0

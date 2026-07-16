@@ -80,9 +80,15 @@ assert_eq 2 "$(cw '😀')" "emoji (lead 0xF0) is two columns"
 # failed OPEN, into a slower path that is correct, which is exactly why no
 # assertion about output ever caught it.
 #
-# So these assertions pin their own locale instead of trusting the caller's, via
-# in_locale from lib.sh — which documents why the obvious `LC_ALL=x func` prefix
-# form does not work in bash 3.2 and would pass for free.
+# So these assertions pin their own locale instead of trusting the caller's, with
+# in_locale from lib.sh. The trap that matters for THIS file: the locale has to be
+# set by ASSIGNMENT inside a ( ) subshell, never with the obvious
+# `LC_ALL=en_US.UTF-8 is_ascii abc` prefix form — bash 3.2 re-runs setlocale when
+# the variable is assigned, but not for the temporary environment of a function
+# call, so the prefix form would silently measure the developer's own collation
+# and pass for free. is_ascii is a bash pattern match, so this shell's own locale
+# is the one under test; see in_locale's comment for the export half, which is
+# what the forked-command callers need.
 
 # Premise check. bash falls back to C collation SILENTLY on an unknown locale —
 # no diagnostic, exit 0 — so if en_US.UTF-8 ever stopped resolving, everything

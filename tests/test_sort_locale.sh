@@ -27,12 +27,20 @@
 #   * export, because the collation under test is `sort`'s, not bash's. A bare
 #     `LC_ALL=x` assignment is a shell variable — an exec'd child never sees it,
 #     so the hostile locale would not apply, every assertion below would measure
-#     C, and the file would pass while testing nothing. This is the same trap as
-#     in_locale in tests/test_text_width.sh but the opposite resolution: that
-#     helper tests bash's OWN collation, which a bare assignment does reach and
-#     the `LC_ALL=x cmd` prefix form does not. Here the prefix form would work on
-#     `sort` directly, but the sorts under test are buried inside cdm functions,
-#     so what we need is the function's children to inherit the locale.
+#     C, and the file would pass while testing nothing. This is the same trap
+#     in_locale (tests/lib.sh) is built around, and it is why that helper both
+#     exports AND assigns: the export is what reaches a forked child, which is
+#     what this file and test_helpers.sh's awk need, while the assignment is what
+#     re-inits THIS shell's own collation, which is what a caller testing a bash
+#     pattern match (is_ascii, looks_like_bundle_id) needs. The `LC_ALL=x cmd`
+#     prefix form would work on `sort` directly, but the sorts under test are
+#     buried inside cdm functions, so what we need is the function's children to
+#     inherit the locale.
+#
+#     These stay local rather than calling in_locale because they are the file's
+#     PREMISE checks — they assert that the hostile collation is hostile and that
+#     an export reaches a child. Routing them through the helper whose contract
+#     they exist to prove would be circular.
 #   * the ( ), because assert_* run their command in the CURRENT shell, so an
 #     unwrapped export would leak into every later assertion in this file.
 
