@@ -3,7 +3,7 @@
 #
 # BSD sort's -u drops a line that compares EQUAL to the line before it, and
 # "equal" means strcoll, not bytes. cdm pins LC_CTYPE and deliberately leaves
-# LC_COLLATE to the user (docs/DESIGN.md#the-lc_ctype-pin), so every unpinned
+# LC_COLLATE to the user (docs/DESIGN.md#locale-pin), so every unpinned
 # `sort -u` in cdm decides what to discard using a comparison the user's
 # environment chose. Three of the four sites feed a decision about deleting
 # files. see docs/DESIGN.md#sort-u-collation

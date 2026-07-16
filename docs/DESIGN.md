@@ -123,17 +123,26 @@ the shared uncollatable weight, which no ASCII line's key has. Exhaustively, all
 2800 byte-distinct strings of length 1–4 over `{a,A,b,0,.,-,_}` survive `sort -u`
 under both C and en_US.UTF-8, and the two sets are identical.
 
-That argument has one seam, which is why the pin beats the proof. It needs every
-looked-up id to be ASCII, and `looks_like_bundle_id`'s `*[!A-Za-z0-9._-]*` is a
-bracket range — so it is `LC_COLLATE`-dependent in exactly the way
-[the display-columns note](#display-columns) describes, and it *accepts*
-`com.café.app` under en_US.UTF-8 while rejecting it under C. A non-ASCII id can
-therefore reach `bid_is_kept`, and two installed apps whose ids differ only by a
-combining mark would collapse and orphan a live one. That needs two such apps to
-exist, so it was never a real-world loss — but the safety of a deletion should
-not rest on a coincidence about which strings Apple ships. The range itself is
-left alone deliberately: changing it changes which orphans get offered for
-deletion, which deserves its own commit rather than a ride-along.
+That argument had one seam, which is why the pin beats the proof — and the seam is
+worth keeping on record, because it is the reason the pin stays even now that the
+seam is closed. The proof needs every looked-up id to be ASCII, and enforcing that
+was once `looks_like_bundle_id`'s `*[!A-Za-z0-9._-]*` — a bracket range, hence
+`LC_COLLATE`-dependent in exactly the way [the display-columns
+note](#display-columns) describes. It *accepted* `com.café.app` under en_US.UTF-8
+while rejecting it under C, so a non-ASCII id could reach `bid_is_kept`, and two
+installed apps whose ids differed only by a combining mark would collapse and
+orphan a live one. That needed two such apps to exist, so it was never a
+real-world loss — but the safety of a deletion should not rest on a coincidence
+about which strings Apple ships.
+
+That guard is now `is_ascii` composed with a character class
+([#bundle-id-shape](#bundle-id-shape)), so the seam is shut at the source and the
+ASCII premise holds under every locale. The pin still stays, for the reason the
+whole section rests on rather than this one: `-u`'s contract is de-duplication,
+and byte-distinct lines are not duplicates. A proof that depends on some *other*
+function continuing to reject non-ASCII is a proof with a live dependency; the
+pin is what makes this site correct on its own terms, and it is the layer that
+would still hold if that guard ever loosened.
 
 The general lesson matches the display-columns bug: this failed **quietly**. No
 error, no wrong-looking output — just fewer lines than went in, on inputs nobody
