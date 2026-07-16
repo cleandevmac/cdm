@@ -1,6 +1,7 @@
 #!/bin/bash
-# _cw / dwidth / clip_plain / shorten_left (cdm:1163, 1173, 1190, 643) — the
-# "measure in display columns, never in characters or bytes" machinery. Three
+# is_ascii / _cw / dwidth / clip_plain / shorten_left (cdm:1218, 1227, 1237,
+# 1251, 681) — the "measure in display columns, never in characters or bytes"
+# machinery. Three
 # different numbers are in play and the layout only ever wants the third: under
 # bash 3.2 `printf '%d' "'中"` answers -28 — the *lead byte* as a signed char,
 # not the code point — so _cw's `v + 256` wrap is what every wide-character
@@ -68,6 +69,57 @@ assert_eq 2 "$(cw '中')" "CJK 中 (lead 0xE4) is two columns"
 assert_eq 2 "$(cw '한')" "Hangul 한 (lead 0xED) is two columns"
 assert_eq 2 "$(cw '😀')" "emoji (lead 0xF0) is two columns"
 
+# ---- is_ascii: the guard all three fast paths hang on -----------------------
+#
+# This one shipped, so it is worth stating plainly. A bracket RANGE in a bash
+# pattern is resolved by LC_COLLATE, so the original guard — `*[!\ -~]*` — was
+# not the guard it looks like. Under any locale but C/POSIX — 284 of the 288 a
+# stock macOS installs — the letters and digits collate above '~', leaving ' '
+# through '~' a punctuation-only interval: the guard answered "not ASCII" for
+# "abc" and all three fast paths were unreachable for very nearly every user. It
+# failed OPEN, into a slower path that is correct, which is exactly why no
+# assertion about output ever caught it.
+#
+# So these assertions pin their own locale instead of trusting the caller's. Two
+# traps, both load-bearing:
+#
+#   * the locale must be set by ASSIGNMENT inside a ( ) subshell. The obvious
+#     `LC_ALL=en_US.UTF-8 is_ascii abc` prefix form does NOT work — bash 3.2
+#     re-runs setlocale when the variable is assigned, but not for the temporary
+#     environment of a function call, so that form silently measures the
+#     developer's own collation and passes for free.
+#   * the ( ) is not optional for a second reason: assert_ok runs its command in
+#     the CURRENT shell, so a bare assignment would leak into every later
+#     assertion in this file.
+in_locale() { ( LC_ALL="$1"; shift; "$@" ); }
+
+# Premise check. bash falls back to C collation SILENTLY on an unknown locale —
+# no diagnostic, exit 0 — so if en_US.UTF-8 ever stopped resolving, everything
+# below would pass vacuously under C and prove nothing. This touches no cdm code;
+# it asserts only that the hostile collation really is hostile. If it fails, this
+# section has lost its teeth: find out why rather than deleting it.
+range_has_a() { ( LC_ALL="$1"; case a in [\ -~]) printf 'yes' ;; *) printf 'no' ;; esac ); }
+assert_eq no  "$(range_has_a en_US.UTF-8)" "premise: under en_US collation the range [ -~] excludes 'a'"
+assert_eq yes "$(range_has_a C)"           "premise: under C collation it contains 'a'"
+
+# The guard itself, under three arrivals that are all real and must all agree.
+# They also isolate the two variables: en_US.UTF-8 is the hostile collation a
+# Terminal exports, C is a bare ssh/launchd (byte ctype, C collation), and
+# C.UTF-8 is the pair between them — UTF-8 ctype with C collation — which is the
+# only one of the three that exercises bash's multibyte matcher against a C
+# collation, and happens to be what this repo's own developer shell exports.
+for loc in en_US.UTF-8 C C.UTF-8; do
+    assert_ok   "is_ascii 'abcdef' under $loc"       in_locale "$loc" is_ascii 'abcdef'
+    assert_ok   "is_ascii 'node_modules' under $loc" in_locale "$loc" is_ascii 'node_modules'
+    assert_ok   "is_ascii 'Code Cache' under $loc"   in_locale "$loc" is_ascii 'Code Cache'
+    assert_ok   "is_ascii '100%' under $loc"         in_locale "$loc" is_ascii '100%'
+    assert_ok   "is_ascii ' a~ ' under $loc"         in_locale "$loc" is_ascii ' a~ '
+    assert_fail "is_ascii '中文字' under $loc"        in_locale "$loc" is_ascii '中文字'
+    assert_fail "is_ascii 'é' under $loc"            in_locale "$loc" is_ascii 'é'
+    assert_fail "is_ascii '—' under $loc"            in_locale "$loc" is_ascii '—'
+    assert_fail "is_ascii 'Tiếng-Việt' under $loc"   in_locale "$loc" is_ascii 'Tiếng-Việt'
+done
+
 # ---- dwidth: a whole string to display columns -----------------------------
 
 assert_eq 0  "$(dw '')"           "empty string is zero columns"
@@ -127,6 +179,10 @@ assert_eq "abcdef" "$(shorten_left 'abcdef' 6)" "exact fit keeps the string whol
 assert_eq "abcdef" "$(shorten_left 'abcdef' 7)" "room to spare keeps the string whole"
 assert_eq "…cdef"  "$(shorten_left 'abcdef' 5)" "keeps the TAIL and prefixes the ellipsis"
 assert_eq "…ef"    "$(shorten_left 'abcdef' 3)" "clipped to 3 columns from the left"
+# The cell that was missing while the fast path was dead, and the defect it hid:
+# spelled `${s: -$((max - 1))}`, this returned '…abcdef' — a 7-column answer to a
+# 1-column budget — because -0 is not negative and bash reads it as offset 0.
+assert_eq "…"      "$(shorten_left 'abcdef' 1)" "max 1 is just the ellipsis"
 
 assert_eq "中文字" "$(shorten_left '中文字' 6)" "3 CJK chars fit exactly in 6 columns"
 assert_eq "…文字"  "$(shorten_left '中文字' 5)" "one column over: drops the head"
@@ -153,16 +209,11 @@ for s in 'abcdef' '中文字' 'a中b' 'Tiếng-Việt' 'プロジェクト' '…
     done
 done
 
-# Same battery for shorten_left, but from max 2. At max 1 the ASCII fast path
-# computes `${s: -$((max - 1))}` = `${s: -0}`, and bash reads -0 as offset 0 —
-# the WHOLE string — so shorten_left 'abcdef' 1 returns '…abcdef', 7 columns for
-# a 1-column budget. That is a real cdm defect, reported rather than fixed here
-# and deliberately not pinned as expected output. It is latent, not live: the
-# only callers pass a constant 36 (cdm:670) and a name_w floored at 12
-# (cdm:1319). The non-ASCII path has no such gap, so '中文字' at max 1 above is
-# genuinely correct.
+# Same battery for shorten_left, from max 1 like clip_plain's above. It started
+# at 2 while the ASCII fast path was dead code, which is what let the `${s: -0}`
+# defect sit in it unseen.
 for s in 'abcdef' '中文字' 'a中b' 'Tiếng-Việt' 'プロジェクト' '…' '100%中文'; do
-    for m in 2 3 4 5 6 7 8 12; do
+    for m in 1 2 3 4 5 6 7 8 12; do
         assert_ok "shorten_left([$s], $m) fits in $m columns" fits shorten_left "$s" "$m"
     done
 done

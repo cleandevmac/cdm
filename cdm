@@ -681,13 +681,17 @@ project_key() {
 shorten_left() {
     local s="$1" max="$2"
     [ "$max" -lt 1 ] && { printf ''; return; }
-    # Fast path: no wide characters possible, so columns == characters.
-    case "$s" in
-        *[!\ -~]*) ;;
-        *) if [ "${#s}" -le "$max" ]; then printf '%s' "$s"
-           else printf '…%s' "${s: -$((max - 1))}"; fi
-           return 0 ;;
-    esac
+    # Fast path: no wide characters possible, so columns == characters. The tail
+    # is taken by counting an offset from the LEFT, and not with the obvious
+    # ${s: -$((max - 1))}: at max 1 that reads ${s: -0}, and -0 is not negative,
+    # so bash takes it as offset 0 — the whole string — and hands back '…abcdef'
+    # for a one-column budget. The branch needs ${#s} > max to be reached, so the
+    # offset below is always >= 2 and never runs off either end.
+    if is_ascii "$s"; then
+        if [ "${#s}" -le "$max" ]; then printf '%s' "$s"
+        else printf '…%s' "${s:$((${#s} - max + 1))}"; fi
+        return 0
+    fi
     dwidth "$s"
     [ "$_DW" -le "$max" ] && { printf '%s' "$s"; return 0; }
     # Walk backwards, taking characters while they fit, leaving a column for the …
@@ -1196,6 +1200,28 @@ term_cols() {
 # ever appear as rule icons, which sit in an unpadded column of their own, so every
 # row shifts alike and nothing misaligns.
 #
+# is_ascii <text> — true when every character is ASCII, so no character can be
+# wide and columns == characters. shorten_left (above), dwidth and clip_plain
+# (below) hang their fast paths on it.
+#
+# It must be a character CLASS and never a bracket range, which is the shape this
+# was first written in and the bug that shipped: a range is resolved by
+# LC_COLLATE, and cdm pins only LC_CTYPE (see the top of the file). Under any
+# locale but C/POSIX — 284 of the 288 installed on a stock macOS — the letters
+# and digits collate *above* `~`, so ' ' through '~' is a punctuation-only
+# interval and `*[!\ -~]*` answered "not ASCII" for `abc`. All three fast paths
+# were unreachable for very nearly every user. It hid because it failed *open*,
+# into a slower path that is correct: no wrong output, just many times the work
+# on the very strings the fast path exists to make cheap, and no assertion about
+# output can see that. [[:ascii:]] is LC_CTYPE-based and cannot regress that way.
+# [[:print:]] is not a substitute — it takes the fast path for CJK.
+is_ascii() {
+    case "$1" in
+        *[![:ascii:]]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 # _cw <char> — sets _CW to one character's display columns.
 _CW=1
 _cw() {
@@ -1210,10 +1236,7 @@ _cw() {
 _DW=0
 dwidth() {
     local s="$1" i=0 n
-    case "$s" in
-        *[!\ -~]*) ;;
-        *) _DW=${#s}; return 0 ;;
-    esac
+    if is_ascii "$s"; then _DW=${#s}; return 0; fi
     _DW=0; n=${#s}
     while [ "$i" -lt "$n" ]; do
         _cw "${s:$i:1}"; _DW=$((_DW + _CW)); i=$((i + 1))
@@ -1229,12 +1252,11 @@ clip_plain() {
     local s="$1" max="$2"
     [ "$max" -lt 1 ] && { printf ''; return; }
     # Fast path: no wide characters possible, so columns == characters.
-    case "$s" in
-        *[!\ -~]*) ;;
-        *) if [ "${#s}" -le "$max" ]; then printf '%s' "$s"
-           else printf '%s…' "${s:0:$((max - 1))}"; fi
-           return 0 ;;
-    esac
+    if is_ascii "$s"; then
+        if [ "${#s}" -le "$max" ]; then printf '%s' "$s"
+        else printf '%s…' "${s:0:$((max - 1))}"; fi
+        return 0
+    fi
     dwidth "$s"
     [ "$_DW" -le "$max" ] && { printf '%s' "$s"; return 0; }
     # Take characters while they fit, leaving one column for the ellipsis.

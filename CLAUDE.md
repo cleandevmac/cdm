@@ -180,10 +180,36 @@ Three different numbers, and the layout only ever wants the third:
   is 10 characters but 14 bytes and got *no* padding at all. The row builder pads by hand instead.
 - `dwidth` gives **display columns**, the only unit the terminal lays out in. CJK, Kana, Hangul and
   emoji are two columns each. It classifies on the UTF-8 lead byte (`>= 0xE3` is wide), which keeps
-  Latin/Vietnamese/Greek/Cyrillic correctly at one, and takes a free fast path on pure-ASCII strings
-  so the common case costs nothing. `clip_plain`, `shorten_left` and the name-column budget all go
-  through it — mixing units there means a row renders wider than it was budgeted, wraps, and scrolls
-  the frame on every repaint.
+  Latin/Vietnamese/Greek/Cyrillic correctly at one, and takes a fast path (via `is_ascii`) on
+  pure-ASCII strings so the common case costs nothing. `clip_plain`, `shorten_left` and the
+  name-column budget all go through it — mixing units there means a row renders wider than it was
+  budgeted, wraps, and scrolls the frame on every repaint.
+
+### A bracket range is not the guard you think you wrote
+
+Ranges in bash patterns are resolved by **`LC_COLLATE`**, and `cdm` pins only `LC_CTYPE`. Those
+three fast paths above were guarded with `*[!\ -~]*` — which reads as "contains a non-ASCII
+character" and is not. Under any locale but `C`/`POSIX` — **284 of the 288** a stock macOS installs,
+including every one a Terminal exports — the letters and digits collate *above* `~`, so ` ` through
+`~` is a punctuation-only interval: the guard answered "not ASCII" for `abc`, and every fast path
+was dead code for very nearly every user, for the life of the tool.
+
+Two lessons, both general:
+
+- Write the guard as a character **class** — `[[:ascii:]]` is `LC_CTYPE`-based, which `cdm` pins, so
+  it cannot regress this way. (`[[:print:]]` is not a substitute: it takes the fast path for CJK.)
+  The same trap is still live in `looks_like_bundle_id`'s `*[!A-Za-z0-9._-]*`, which accepts
+  accented bundle ids under `en_US.UTF-8` and rejects them under `C` — left alone deliberately,
+  because changing it changes which orphans get offered for deletion, and that deserves its own
+  commit rather than a ride-along.
+- It hid because it failed **open**, into a slower path that was correct. No output was ever wrong —
+  it just did far more work on the strings the fast path exists to make cheap (measured: 200
+  `dwidth` calls on a 42-column path, 0.55s before / 0.01s after), and *no assertion about output
+  can see that*. `tests/mutate.sh` is what surfaced it: a mutation inside the dead
+  branch survived, because a mutation in unreachable code cannot fail a test. Treat a surviving
+  mutation as a claim about reachability, not only about coverage. `tests/test_text_width.sh` now
+  pins the locale itself (`in_locale`) rather than trusting the developer's — under `LANG=C.UTF-8`
+  the suite passed and CI, on `en_US.UTF-8`, did not.
 
 ### The menu is a fixed-height frame — mind the last newline
 

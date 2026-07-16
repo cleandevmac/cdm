@@ -131,7 +131,44 @@ check_mutation 'clip_plain off-by-one leaves no room for ellipsis' test_text_wid
     's|\[ \$((w + _CW)) -gt \$((max - 1)) \] && break|[ $((w + _CW)) -gt $max ] \&\& break|'
 
 check_mutation 'shorten_left clips from the right instead' test_text_width.sh \
-    's|else printf .…%s. "\${s: -\$((max - 1))}"; fi|else printf "…%s" "${s:0:$((max - 1))}"; fi|'
+    's|else printf .…%s. "\${s:\$((\${#s} - max + 1))}"; fi|else printf "…%s" "${s:0:$((max - 1))}"; fi|'
+
+# The ${s: -0} defect, which the dead fast path below masked for the life of the
+# tool: -0 is not negative, so bash reads it as offset 0 and returns the whole
+# string. Only reachable — and so only catchable — now that the guard works.
+check_mutation 'shorten_left fast path regains the ${s: -0} defect' test_text_width.sh \
+    's|else printf .…%s. "\${s:\$((\${#s} - max + 1))}"; fi|else printf "…%s" "${s: -$((max - 1))}"; fi|'
+
+# The guard is a character CLASS, never a bracket range. The first of these is
+# the bug that shipped: a range is resolved by LC_COLLATE, cdm pins only
+# LC_CTYPE, and under any locale but C/POSIX the range ' ' to '~' excludes every
+# letter, so the guard answered "not ASCII" for "abc" and all three fast paths
+# were dead code. It changed no output, only speed, which is why nothing caught it —
+# test_text_width.sh catches it now by asserting is_ascii under a locale it pins
+# itself, rather than the one the developer happens to be running.
+check_mutation 'is_ascii guard reverts to a collation-dependent range' test_text_width.sh \
+    's|\*\[!\[:ascii:\]\]\*) return 1 ;;|*[!\\ -~]*) return 1 ;;|'
+
+# Mutating the ACTION, not the pattern. The `*ZZZNOMATCHZZZ*` idiom used above
+# only never-matches as a literal substring: inside brackets, `[!ZZZNOMATCHZZZ]`
+# is a negated SET, so shrinking it makes the guard match MORE and quietly gives
+# you the mutation below a second time. This direction is the one that corrupts
+# output rather than costing speed — dwidth then measures 中文字 at 3 columns.
+check_mutation 'is_ascii calls everything ASCII' test_text_width.sh \
+    's|\*\[!\[:ascii:\]\]\*) return 1 ;;|*[![:ascii:]]*) return 0 ;;|'
+
+check_mutation 'is_ascii calls nothing ASCII (fast paths dead)' test_text_width.sh \
+    's|^        \*) return 0 ;;$|        *) return 1 ;;|'
+
+# Three more are deliberately absent: replacing `if is_ascii "$s"` with `if false`
+# in dwidth, clip_plain or shorten_left. Each makes that fast path dead code
+# again — the exact bug fixed here — but the fast and slow paths agree on every
+# output by construction, so no INPUT distinguishes the mutant; it costs speed,
+# not correctness. Catching one would mean stubbing is_ascii and asserting it was
+# called, i.e. pinning an implementation detail rather than behavior. All three
+# were verified to survive rather than assumed. 'is_ascii calls nothing ASCII'
+# above covers the real risk — a guard that answers "not ASCII" for "abc" — at
+# the guard itself, which is where the bug actually was.
 
 # ---- category model --------------------------------------------------------
 
