@@ -116,6 +116,29 @@ assert_fail() {
     fi
 }
 
+# in_locale <locale> <cmd...> — run <cmd> under a locale this suite chooses,
+# rather than the one the developer's shell happens to export.
+#
+# cdm pins LC_CTYPE and deliberately leaves LC_COLLATE to the user, so "which
+# locale is in force" is a real input to any function that matches a pattern —
+# and two bugs have now shipped from a bracket range reading differently under
+# one collation than another (is_ascii, looks_like_bundle_id). A test that does
+# not pin the locale is not testing the guard, it is testing the developer's
+# environment: under LANG=C.UTF-8 the suite passed while CI, on en_US.UTF-8,
+# did not.
+#
+# Two traps, both load-bearing, both silent when you get them wrong:
+#
+#   * the locale must be set by ASSIGNMENT inside the ( ). The obvious prefix
+#     form — `LC_ALL=en_US.UTF-8 is_ascii abc` — does NOT work: bash 3.2 re-runs
+#     setlocale when the variable is assigned, but not for the temporary
+#     environment of a function call, so that form silently measures the
+#     developer's own collation and passes for free.
+#   * the ( ) is not optional for a second reason: assert_ok/assert_fail run
+#     their command in the CURRENT shell, so a bare assignment would leak into
+#     every later assertion in the file.
+in_locale() { ( LC_ALL="$1"; shift; "$@" ); }
+
 # Every test file ends with this; its exit status is what run.sh counts.
 test_summary() {
     if [ "$T_FAIL" -gt 0 ]; then

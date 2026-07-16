@@ -913,9 +913,17 @@ bid_is_kept() {
     return 1
 }
 
+# looks_like_bundle_id <name> — true when a name has the shape of a reverse-DNS
+# bundle id, and so is a candidate for the orphan scan. Accepts the set Apple
+# documents — ASCII alphanumerics plus . _ - — as is_ascii FIRST and then
+# [[:alnum:]]: both are LC_CTYPE-based (which cdm pins), where a bracket range
+# would not be, and [[:alnum:]] alone under the pinned UTF-8 ctype means "any
+# alphanumeric in Unicode" and would offer 私の.大切な.データ for deletion.
+# see docs/DESIGN.md#bundle-id-shape
 looks_like_bundle_id() {
     case "$1" in *.*.*) : ;; *) return 1 ;; esac
-    case "$1" in *[!A-Za-z0-9._-]*) return 1 ;; esac
+    is_ascii "$1" || return 1
+    case "$1" in *[![:alnum:]._-]*) return 1 ;; esac
     return 0
 }
 

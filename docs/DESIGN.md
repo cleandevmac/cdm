@@ -203,6 +203,49 @@ immediately before its descendants, so a single prefix test suffices; this
 also keeps the per-project size total from double-counting. Then group by
 project key for stable, contiguous per-project categories.
 
+<a id="bundle-id-shape"></a>
+## looks_like_bundle_id and the ASCII set
+
+looks_like_bundle_id decides which directory names are even CONSIDERED for the
+orphan scan, and so which are eligible to be offered for deletion. It is a shape
+heuristic, not a validator: reverse-DNS (two dots), drawn from the characters
+Apple permits. The spec is explicit — "The bundle ID string must contain only
+alphanumeric characters (A–Z, a–z, 0–9), hyphens (-), and periods (.)" — so the
+set is ASCII. cdm additionally allows the underscore, which Apple's spec does
+not: real directories under Application Support use it, and this filter's job is
+to recognise candidates, not to disqualify an app for being off-spec.
+
+The guard was `*[!A-Za-z0-9._-]*` for the life of the tool. That is a bracket
+RANGE, resolved by LC_COLLATE, which cdm deliberately does not pin (see
+#locale-pin) — so the ORPHAN LIST depended on the user's LANG. Under en_US.UTF-8
+an accented letter collates inside [A-Za-z], so `com.füü.bar` was accepted;
+under C it was rejected. Same machine, same disk, a different set of files
+offered for deletion. It was never a safety hole — the accepted ASCII set is
+byte-identical under both collations, so `/`, `..`, spaces and glob
+metacharacters were refused either way, and every deletion still passes
+is_safe_target — but "which of my files are you offering to delete" should not
+have a locale-dependent answer.
+
+The fix is NOT the obvious `*[![:alnum:]._-]*`. A class is LC_CTYPE-based, which
+cdm does pin, so that much is right — but the pin forces a *UTF-8* ctype, and
+under UTF-8 [[:alnum:]] means "any alphanumeric in Unicode". It is consistent
+across locales and consistently WIDER than today: `com.日本.app` is rejected
+under every collation now and would start being accepted, and a folder named
+`私の.大切な.データ` — two dots, every character alnum — would newly look like a
+bundle id, match no installed app, and be offered for deletion. Trading a
+locale-dependent candidate set for a uniformly larger one is not a fix.
+
+So compose the two: is_ascii first, then [[:alnum:]._-] over what survives. Both
+are LC_CTYPE-based, and once a string is known ASCII, [[:alnum:]] can only mean
+A-Za-z0-9. The result is exactly the set Apple documents, identical under every
+locale, and equal to what C-collation users already had.
+
+One consequence for anyone mutating this: with is_ascii in front, swapping the
+class back to the old range is an EQUIVALENT mutant. Only ASCII ever reaches the
+second case, and over ASCII the range and the class accept the same characters
+under every collation. is_ascii is the guard doing the locale-proofing, so
+removing IT is the mutation tests/mutate.sh asserts on.
+
 <a id="sort-by-size"></a>
 ## sort_by_size
 

@@ -204,10 +204,12 @@ Two lessons, both general:
 
 - Write the guard as a character **class** — `[[:ascii:]]` is `LC_CTYPE`-based, which `cdm` pins, so
   it cannot regress this way. (`[[:print:]]` is not a substitute: it takes the fast path for CJK.)
-  The same trap is still live in `looks_like_bundle_id`'s `*[!A-Za-z0-9._-]*`, which accepts
-  accented bundle ids under `en_US.UTF-8` and rejects them under `C` — left alone deliberately,
-  because changing it changes which orphans get offered for deletion, and that deserves its own
-  commit rather than a ride-along.
+  `looks_like_bundle_id` had the same trap and is fixed too — but note the class alone was *not* the
+  fix there. The pin forces a **UTF-8** ctype, under which `[[:alnum:]]` means "any alphanumeric in
+  Unicode", so `*[![:alnum:]._-]*` would have traded a locale-dependent orphan list for a uniformly
+  wider one — offering a folder named `私の.大切な.データ` for deletion. It composes `is_ascii` with
+  the class instead. A class fixes *which* locale category decides; it does not by itself say ASCII.
+  See `docs/DESIGN.md#bundle-id-shape`.
 - It hid because it failed **open**, into a slower path that was correct. No output was ever wrong —
   it just did far more work on the strings the fast path exists to make cheap (measured: 200
   `dwidth` calls on a 42-column path, 0.55s before / 0.01s after), and *no assertion about output

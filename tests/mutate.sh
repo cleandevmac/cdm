@@ -170,6 +170,36 @@ check_mutation 'is_ascii calls nothing ASCII (fast paths dead)' test_text_width.
 # above covers the real risk — a guard that answers "not ASCII" for "abc" — at
 # the guard itself, which is where the bug actually was.
 
+# ---- the orphan shape filter -----------------------------------------------
+#
+# looks_like_bundle_id gates every orphaned-app-data lookup, so its accepted set
+# IS the deletion-candidate set. Same class of bug as is_ascii above, one level
+# up in consequence: `*[!A-Za-z0-9._-]*` is a range, resolved by LC_COLLATE,
+# which cdm does not pin — so the orphan list depended on the user's LANG.
+
+check_mutation 'looks_like_bundle_id drops its ASCII restriction' test_bundle_id.sh \
+    's|    is_ascii "\$1" \|\| return 1|    :|'
+
+check_mutation 'looks_like_bundle_id accepts any name shape' test_bundle_id.sh \
+    's|\*\[!\[:alnum:\]\._-\]\*) return 1 ;;|*[![:alnum:]._-]*) return 0 ;;|'
+
+check_mutation 'looks_like_bundle_id stops requiring reverse-DNS' test_bundle_id.sh \
+    's|case "\$1" in \*\.\*\.\*) : ;; \*) return 1 ;; esac|case "$1" in *.*) : ;; *) return 1 ;; esac|'
+
+# The first of those is the interesting one, and it is the NAIVE FIX rather than
+# the original bug: dropping is_ascii leaves `*[![:alnum:]._-]*`, which is a
+# class, so it is LC_CTYPE-based and locale-consistent — and consistently WIDER
+# than the bug it replaces, because cdm's pin forces a UTF-8 ctype, where
+# [[:alnum:]] means "any alphanumeric in Unicode". It newly offers a folder named
+# 私の.大切な.データ for deletion. test_bundle_id.sh catches it on the CJK cases.
+#
+# One is deliberately absent: swapping the class back to `*[!A-Za-z0-9._-]*`.
+# With is_ascii in front, only ASCII reaches that case, and over ASCII the range
+# and the class accept the same characters under every collation — an EQUIVALENT
+# mutant, verified to survive rather than assumed. That is not a hole: is_ascii
+# is the half doing the locale-proofing, and removing it is the mutation above.
+# see docs/DESIGN.md#bundle-id-shape
+
 # ---- category model --------------------------------------------------------
 
 check_mutation 'prune_zero drops CAT_METHOD from the compaction' test_categories.sh \
