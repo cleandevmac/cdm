@@ -61,7 +61,83 @@ which is nothing at all over plain ssh, from launchd/cron, or with Terminal's
 and slices text with those two operators, so under a C ctype every rule's
 description gets cut mid-em-dash into a replacement glyph and the keys line
 mis-measures itself. Only LC_CTYPE is set: collation stays the user's business,
-and the `LC_ALL=C sort` calls that need byte order still say so per-command.
+and the `LC_ALL=C sort` calls that need byte order still say so per-command —
+including every `sort -u`, for the reason below.
+
+<a id="sort-u-collation"></a>
+## `sort -u` compares by collation, not by bytes
+
+`sort -u` drops a line that compares equal to the line before it, and "equal"
+means strcoll, not memcmp. The ctype pin above deliberately leaves LC_COLLATE to
+the user, so an unpinned `sort -u` lets the user's environment decide which of
+cdm's own lines to discard. Four sites did. Measured on macOS (BSD sort):
+
+    printf 'cafe\xcc\x81\ncafe\xcc\x80\ncafe\xcc\x88\n' | sort -u   # en_US.UTF-8 -> 1 line
+    printf 'cafe\xcc\x81\ncafe\xcc\x80\ncafe\xcc\x88\n' | LC_ALL=C sort -u        # -> 3 lines
+
+Those are café, cafè and cafë spelled NFD — an ASCII base plus a combining mark.
+Three different names; two silently stop existing. NFD is not a curiosity: it is
+what git returns with `core.precomposeunicode=false`, and what arrives from
+Linux-authored repos, rsync and zip archives. Nothing has to normalise anything.
+
+The mechanism is worth stating precisely, because the two obvious readings are
+both false and each mis-states the blast radius in a different direction. It is
+**not** truncation at the first uncollatable character — `ab<SHY>c` and
+`ab<SHY>d` stay distinct. It is **not** "an identical ASCII skeleton collapses"
+— `abc` and `ab<SHY>c` stay distinct too. What actually happens: every character
+missing from the locale's collation table collates as one shared weight, so two
+uncollatable characters are indistinguishable **from each other**, and never
+from a plain ASCII line. Hence `ab<SHY>c` == `ab<ZWSP>c`, while `abc` matches
+neither. The uncollatable set is not exotic — the combining marks, NBSP, U+2010
+and the zero-width family are all in it.
+
+All four sites take `LC_ALL=C` rather than only the ones where loss is provably
+reachable, because -u's contract is de-duplication and byte-distinct lines are
+not duplicates:
+
+* `flush_project_category`'s summary — real filenames, so non-ASCII is routine.
+  A collapse drops a name from the "what's inside" blurb, whose entire job is to
+  say what is in there. This is the one site with a user-visible **ordering**,
+  the only argument for keeping the user's collation; it loses, because the
+  blurb is a junk-name list nobody navigates and byte order is what the rest of
+  cdm already sorts by. It is also the only site reachable as a unit test, and
+  so the only one whose pin is proven by behaviour rather than by inspection.
+* `scan_projects`' uniq_names — feeds `find -name`, so a dropped name is a
+  directory never scanned. Every shipped rule is ASCII today, but rules are data
+  and adding a target is meant to be a JSON edit.
+* `build_installed_set`'s INSTALLED list — `defaults read` returns arbitrary text, so
+  non-ASCII reaches it and lines really can be dropped. See below.
+* `register_orphans`' bid list — a dropped bid loses its whole orphan group.
+
+INSTALLED earns its own note, because a line lost there is the only one that
+could delete a **live app's** data: `bid_is_kept`'s `grep -qxF "$bid"` is what
+answers "this app is installed, leave it alone", and a false answer trashes it.
+That was already safe, but not for either reason previously offered. "Its
+consumers are order-independent" is a non-sequitur — order-independence defends
+against reordering, not loss. "A collapse preserves the ASCII skeleton" is
+simply false, per the mechanism above. The real protection is that a pure-ASCII
+line cannot collapse with anything: any line that could collide with it carries
+the shared uncollatable weight, which no ASCII line's key has. Exhaustively, all
+2800 byte-distinct strings of length 1–4 over `{a,A,b,0,.,-,_}` survive `sort -u`
+under both C and en_US.UTF-8, and the two sets are identical.
+
+That argument has one seam, which is why the pin beats the proof. It needs every
+looked-up id to be ASCII, and `looks_like_bundle_id`'s `*[!A-Za-z0-9._-]*` is a
+bracket range — so it is `LC_COLLATE`-dependent in exactly the way
+[the display-columns note](#display-columns) describes, and it *accepts*
+`com.café.app` under en_US.UTF-8 while rejecting it under C. A non-ASCII id can
+therefore reach `bid_is_kept`, and two installed apps whose ids differ only by a
+combining mark would collapse and orphan a live one. That needs two such apps to
+exist, so it was never a real-world loss — but the safety of a deletion should
+not rest on a coincidence about which strings Apple ships. The range itself is
+left alone deliberately: changing it changes which orphans get offered for
+deletion, which deserves its own commit rather than a ride-along.
+
+The general lesson matches the display-columns bug: this failed **quietly**. No
+error, no wrong-looking output — just fewer lines than went in, on inputs nobody
+tests with. `sort -u` is the only sort in cdm whose output depends on the
+comparison being byte-exact; plain `sort` merely reorders, and `awk '!seen[$0]++'`
+(used for the same job in `scan_projects`) de-duplicates on bytes and is immune.
 
 <a id="fd-3"></a>
 ## Keypresses come from fd 3, never fd 0
