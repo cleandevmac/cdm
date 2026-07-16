@@ -80,18 +80,9 @@ assert_eq 2 "$(cw '😀')" "emoji (lead 0xF0) is two columns"
 # failed OPEN, into a slower path that is correct, which is exactly why no
 # assertion about output ever caught it.
 #
-# So these assertions pin their own locale instead of trusting the caller's. Two
-# traps, both load-bearing:
-#
-#   * the locale must be set by ASSIGNMENT inside a ( ) subshell. The obvious
-#     `LC_ALL=en_US.UTF-8 is_ascii abc` prefix form does NOT work — bash 3.2
-#     re-runs setlocale when the variable is assigned, but not for the temporary
-#     environment of a function call, so that form silently measures the
-#     developer's own collation and passes for free.
-#   * the ( ) is not optional for a second reason: assert_ok runs its command in
-#     the CURRENT shell, so a bare assignment would leak into every later
-#     assertion in this file.
-in_locale() { ( LC_ALL="$1"; shift; "$@" ); }
+# So these assertions pin their own locale instead of trusting the caller's, via
+# in_locale from lib.sh — which documents why the obvious `LC_ALL=x func` prefix
+# form does not work in bash 3.2 and would pass for free.
 
 # Premise check. bash falls back to C collation SILENTLY on an unknown locale —
 # no diagnostic, exit 0 — so if en_US.UTF-8 ever stopped resolving, everything
