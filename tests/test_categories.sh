@@ -1,5 +1,6 @@
 #!/bin/bash
-# The category model (cdm:350-416) and the passes that reorder it (cdm:1011-1113).
+# The category model (cdm's category-model section) and the passes that reorder
+# it (prune_zero and sort_by_size).
 #
 # macOS ships bash 3.2, which has no associative arrays, so a category is not an
 # object — it is one index shared across ten arrays: CAT_ICON, CAT_NAME,
@@ -7,12 +8,12 @@
 # CAT_SUMMARY, with N as the count. The invariant is ALIGNMENT: after any
 # operation, index i still names the same category in all ten.
 #
-# Nothing enforces that. prune_zero (cdm:1053-1057) and sort_by_size
-# (cdm:1078-1090) each hand-copy all ten arrays, so adding an eleventh array and
-# forgetting it in one of those three copy blocks desynchronizes the model
-# silently: no error, no crash, just a row that renders one category's name
-# beside another's size — and, since CAT_PATHS is what clean_selected deletes,
-# potentially deletes the paths of a category the user never selected.
+# Nothing enforces that. prune_zero's copy block and sort_by_size's two each
+# hand-copy all ten arrays, so adding an eleventh array and forgetting it in one
+# of those three copy blocks desynchronizes the model silently: no error, no
+# crash, just a row that renders one category's name beside another's size —
+# and, since CAT_PATHS is what clean_selected deletes, potentially deletes the
+# paths of a category the user never selected.
 #
 # Which is why the assertions below never check a single column. The fixtures
 # make every field carry its row's tag ("name-B", "desc-B", "/paths/B", ...) and
@@ -32,8 +33,8 @@
 
 # ---- helpers ---------------------------------------------------------------
 
-# Mirrors the reset at the top of load_patterns (cdm:502-509). Each fixture
-# starts from empty so a previous fixture's tail can never satisfy an assertion.
+# Mirrors the reset at the top of load_patterns(). Each fixture starts from
+# empty so a previous fixture's tail can never satisfy an assertion.
 reset_cats() {
     CAT_ICON=(); CAT_NAME=(); CAT_DESC=(); CAT_METHOD=()
     CAT_DEFAULT=(); CAT_PATHS=(); CAT_KB=(); CAT_SEL=()
@@ -74,7 +75,7 @@ names() {
     printf '%s' "$out"
 }
 
-# ---- add_category (cdm:371) ------------------------------------------------
+# ---- add_category ----------------------------------------------------------
 
 reset_cats
 assert_eq "0" "$N" "N starts at 0"
@@ -111,11 +112,11 @@ assert_eq "ICON3|NAME3|DESC3|rm|0|/path/3|0|0||" "$(row 3)" \
 
 assert_eq "NAME0 NAME1 NAME2 NAME3" "$(names)" "cat_indices walks 0..N-1 in order"
 
-# ---- prune_zero (cdm:1048) -------------------------------------------------
+# ---- prune_zero ------------------------------------------------------------
 #
 # Six rows; three survive on size and one on the emptytrash exemption. Row 0 is
 # a zero, so every surviving row moves to a lower index (1->0, 3->1, 4->2,
-# 5->3) and the copy at cdm:1053-1057 is exercised for all ten arrays on all
+# 5->3) and prune_zero's copy block is exercised for all ten arrays on all
 # four rows. Fields vary independently — DEFAULT and SEL are deliberately not
 # equal to each other, and the methods differ between adjacent survivors — so
 # no forgotten array can hold a right-looking stale value.
@@ -146,14 +147,14 @@ assert_eq "$(want_row E 0 emptytrash 0 1)"   "$(row 2)" \
 assert_eq "$(want_row F 200 rm 1 0)"         "$(row 3)" \
     "prune_zero: row F keeps all ten of its own fields at its new index"
 
-# The emptytrash exemption (cdm:1051) is the one reason a zero-KB row lives:
+# The emptytrash exemption in prune_zero is the one reason a zero-KB row lives:
 # ~/.Trash reports whatever size it likes and the row must stay offerable.
 assert_eq "name-E" "${CAT_NAME[2]}" \
     "a zero-size emptytrash category survives the prune"
 assert_eq "emptytrash" "${CAT_METHOD[2]}" \
     "the surviving zero-size row is the emptytrash one, not a mis-copied neighbour"
 
-# Nothing to prune: the w == r fast path at cdm:1052 must leave the list alone.
+# Nothing to prune: prune_zero's w == r fast path must leave the list alone.
 reset_cats
 mkcat G 10 rm    1 1
 mkcat H 20 trash 0 0
@@ -175,7 +176,7 @@ reset_cats
 prune_zero
 assert_eq "0" "$N" "prune_zero on an empty list is a no-op"
 
-# ---- sort_by_size (cdm:1072) -----------------------------------------------
+# ---- sort_by_size ----------------------------------------------------------
 #
 # Built deliberately out of KB order, with a tie in the middle. Expected order
 # is Q(500) R(500) T(300) P(90) S(0): descending, and Q before R because
@@ -233,7 +234,7 @@ reset_cats
 sort_by_size
 assert_eq "0" "$N" "sort_by_size on an empty list is a no-op"
 
-# ---- selected_count / selected_kb (cdm:1111-1112) --------------------------
+# ---- selected_count / selected_kb ------------------------------------------
 #
 # The sizes are chosen so the three plausible wrong answers are all distinct
 # from the right one: summing every row gives 1130, summing none gives 0, and
@@ -249,7 +250,7 @@ mkcat Y 3    rm    1 1
 assert_eq "3"   "$(selected_count)" "selected_count counts only the selected rows"
 assert_eq "123" "$(selected_kb)"    "selected_kb sums only the selected rows"
 
-# CAT_SEL is compared as the string "1" (cdm:1111), so anything else is
+# CAT_SEL is compared as the string "1" in selected_count, so anything else is
 # unselected — including values that are merely truthy-looking.
 CAT_SEL[1]="0"
 assert_eq "3"   "$(selected_count)" "an already-unselected row stays uncounted"
@@ -261,7 +262,7 @@ reset_cats
 assert_eq "0" "$(selected_count)" "selected_count is 0 on an empty list"
 assert_eq "0" "$(selected_kb)"    "selected_kb is 0 on an empty list"
 
-# ---- toggle_all (cdm:1463) / select_safe (cdm:1464) ------------------------
+# ---- toggle_all / select_safe ----------------------------------------------
 #
 # The defaults are mixed (1,0,0,1,1) precisely so select_safe cannot be faked by
 # a function that just sets everything to 1 — or to 0.

@@ -1,19 +1,20 @@
 #!/bin/bash
-# delete_path (cdm:1484), move_to_trash (cdm:1469) and empty_trash (cdm:1507) —
-# the three functions that actually destroy data, tested for real against
-# fixtures in the sandbox home rather than mocked.
+# delete_path(), move_to_trash() and empty_trash() — the three functions that
+# actually destroy data, tested for real against fixtures in the sandbox home
+# rather than mocked.
 #
 # What makes this file subtle is that almost every assertion here has a vacuous
 # twin, and the vacuous one reads identically:
 #
 #   * delete_path returns 0 for THREE different reasons — it deleted the thing,
-#     it found the thing already gone (cdm:1487), or the method fell off the end
-#     of the case. And "rm" returns 0 even when `rm -rf` failed, because its exit
-#     status is discarded (cdm:1501). So an exit code proves nothing on its own:
-#     every claim below is pinned by looking at the filesystem afterwards.
+#     its existence check found the thing already gone, or the method fell off
+#     the end of the case. And "rm" returns 0 even when `rm -rf` failed, because
+#     that branch discards rm's exit status. So an exit code proves nothing on
+#     its own: every claim below is pinned by looking at the filesystem
+#     afterwards.
 #   * the refusal test is the mirror trap, and it is the reason every unsafe
-#     fixture here is created before it is refused. The existence check at
-#     cdm:1487 runs BEFORE the gate at cdm:1488, so a refusal asserted on a path
+#     fixture here is created before it is refused. delete_path's existence
+#     check runs BEFORE its is_safe_target gate, so a refusal asserted on a path
 #     that merely does not exist never reaches the gate at all — and would keep
 #     "passing" with the whole is_safe_target call deleted. Both unsafe fixtures
 #     are therefore made to exist first and checked to STILL exist afterwards.
@@ -22,10 +23,10 @@
 #     checked by reading the payload back out of ~/.Trash, so a move_to_trash
 #     that lost the contents and left an empty directory behind would fail.
 #   * `date` is stubbed for the collision block only. move_to_trash's dedup name
-#     is built from a timestamp (cdm:1476), so the third collision only reaches
-#     the `-${n}` suffix loop (cdm:1478) if it lands in the same SECOND as the
-#     second one. Left to the wall clock that is a coin flip that passes locally
-#     and flakes in CI; pinning the clock makes the loop run every time.
+#     is built from a timestamp, so the third collision only reaches that
+#     block's `-${n}` suffix loop if it lands in the same SECOND as the second
+#     one. Left to the wall clock that is a coin flip that passes locally and
+#     flakes in CI; pinning the clock makes the loop run every time.
 
 . "$(dirname "$0")/lib.sh"
 
@@ -56,8 +57,8 @@ mkdir -p "$HOME/Library/Caches" || exit 1
 # ---- empty_trash with no Trash at all --------------------------------------
 #
 # Ordering: this has to run before anything trashes a fixture, because it is the
-# only moment the sandbox home has no ~/.Trash. move_to_trash mkdir -p's one
-# (cdm:1471), and after that this branch is unreachable.
+# only moment the sandbox home has no ~/.Trash. move_to_trash mkdir -p's one on
+# its way in, and after that this branch is unreachable.
 
 assert_ok "empty_trash with no ~/.Trash is a no-op" empty_trash
 assert_ok "empty_trash did not conjure a ~/.Trash" test ! -d "$HOME/.Trash"
@@ -92,7 +93,7 @@ assert_ok "the dir arrived in ~/.Trash" test -d "$HOME/.Trash/trashme"
 assert_eq "payload-abc" "$(cat "$HOME/.Trash/trashme/data.txt" 2>/dev/null)" \
     "the trashed data is still readable — this is what 'recoverable' means"
 
-# ---- move_to_trash: collisions (cdm:1474-1479) ------------------------------
+# ---- move_to_trash: collisions (its dedup block) ----------------------------
 #
 # Three different directories, one shared basename. Cache dirs collide like this
 # constantly (every repo has a `node_modules`), and the second one landing on top
@@ -131,7 +132,7 @@ assert_eq "3" "$(count_dups)" "all three dups survive in the Trash"
 
 unset -f date
 
-# ---- move_to_trash reports a move it could not make (cdm:1480-1481) ---------
+# ---- move_to_trash reports a move it could not make (its mv guards) ---------
 #
 # A trash is a rename, and a rename needs write permission on the SOURCE's parent
 # — which a read-only cache tree does not give. move_to_trash guards this twice,
@@ -156,7 +157,7 @@ assert_ok "...and nothing was reported into the Trash" test ! -e "$HOME/.Trash/v
 
 chmod -R u+w "$HOME/Library/Caches/locked"
 
-# ---- delete_path on a path that is already gone (cdm:1487) ------------------
+# ---- delete_path on a path that is already gone (its existence check) -------
 #
 # Not an error: categories overlap, so an earlier one in the same run may have
 # already removed this. Returning 1 here would make a clean report failures for
@@ -171,7 +172,7 @@ assert_ok "rmforce of a nonexistent path is success" \
 assert_ok "a nonexistent path is not resurrected in the Trash" \
     test ! -e "$HOME/.Trash/nope-xyzzy"
 
-# ---- delete_path REFUSES an unsafe target (cdm:1488) ------------------------
+# ---- delete_path REFUSES an unsafe target (its is_safe_target gate) ---------
 #
 # The load-bearing test in this file: the join between the gate and the deleter.
 # is_safe_target can be perfect and it buys nothing if delete_path forgets to
@@ -205,7 +206,7 @@ assert_ok "...and the protected file IS STILL THERE" \
 assert_fail "rm refuses \$HOME itself" delete_path rm "$HOME"
 assert_ok "...and \$HOME is still populated" test -d "$HOME/Library/Caches"
 
-# ---- rmforce vs rm on a read-only tree (cdm:1495-1499) ----------------------
+# ---- rmforce vs rm on a read-only tree (delete_path's branches) -------------
 #
 # Go's module cache and Cargo's source cache ship 0500 directories. rm -rf cannot
 # remove a file from a directory it cannot write to, so plain `rm` walks away
@@ -265,7 +266,7 @@ assert_ok "THE TARGET STILL EXISTS after rmforce" \
 assert_eq "400" "$(stat -f %Lp "$OUTSIDE/linktarget/precious" 2>/dev/null)" \
     "rmforce's chmod -R did not follow the link into the target tree"
 
-# ---- empty_trash (cdm:1510-1512) --------------------------------------------
+# ---- empty_trash (its glob loop) --------------------------------------------
 #
 # ~/.Trash still holds every fixture trashed above. The dotfile matters: the loop
 # globs "$trash_dir"/* AND "$trash_dir"/.[!.]*, and dropping the second leaves

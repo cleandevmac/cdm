@@ -1,23 +1,25 @@
 # tests/lib.sh — sandbox + assertions for the cdm unit tests.
 #
 # Sourcing this loads every cdm function into the caller's shell via the CDM_LIB
-# hook (cdm:1658), with $HOME pointed at a throwaway directory. Three details of
-# cdm's top level dictate the order below, and getting any of them wrong makes
-# the tests silently assert against the wrong thing rather than fail loudly.
+# hook near the bottom of cdm, with $HOME pointed at a throwaway directory.
+# Three details of cdm's top level dictate the order below, and getting any of
+# them wrong makes the tests silently assert against the wrong thing rather than
+# fail loudly.
 #
 #   * $HOME must be exported BEFORE the source. cdm captures HOME_P — the
-#     symlink-resolved home — at source time (cdm:277), and is_safe_target
-#     compares against that snapshot. Exporting HOME afterwards leaves HOME_P
-#     pointing at the real home, and every containment assertion would be
-#     testing the developer's actual $HOME instead of the sandbox.
-#   * `set --` must come BEFORE the source. cdm parses "$@" at its top level
-#     (cdm:112) and a sourced script inherits the caller's positional
-#     parameters, so `bash tests/test_foo.sh --verbose` would reach cdm's
-#     option parser and exit 1 on "Unknown option" before a single test ran.
-#   * Sourcing has side effects on disk: it mkdir -p's $HOME/.cleandevmac
-#     (cdm:165) and mktemp -d's SCAN_DIR (cdm:169). The sandbox contains the
-#     first; cdm's own EXIT trap removes the second, which is why the cleanup
-#     below calls cleanup_on_exit rather than replacing it.
+#     symlink-resolved home — at source time, and is_safe_target compares
+#     against that snapshot. Exporting HOME afterwards leaves HOME_P pointing at
+#     the real home, and every containment assertion would be testing the
+#     developer's actual $HOME instead of the sandbox.
+#   * `set --` must come BEFORE the source. cdm parses "$@" at its top level and
+#     a sourced script inherits the caller's positional parameters, so
+#     `bash tests/test_foo.sh --verbose` would reach cdm's option parser and
+#     exit 1 on "Unknown option" before a single test ran.
+#   * Sourcing has side effects on disk: it mkdir -p's LOG_DIR
+#     ($HOME/.cleandevmac) and mktemp -d's SCAN_DIR, both at cdm's top level.
+#     The sandbox contains the first; cdm's own EXIT trap removes the second,
+#     which is why the cleanup below calls cleanup_on_exit rather than replacing
+#     it.
 #
 # Note $HOME and HOME_P deliberately differ here: mktemp -d returns a path under
 # /var (or /tmp), both of which are symlinks on macOS, so HOME_P resolves to
@@ -45,10 +47,10 @@ _cdm_test_cleanup() {
     # Guarded because this trap is armed BEFORE cdm is sourced (see below), so on
     # an early exit the function does not exist yet.
     if type cleanup_on_exit >/dev/null 2>&1; then
-        # Silenced because cleanup_on_exit -> leave_tui unconditionally prints
-        # the show-cursor escape (cdm:188), which would otherwise spray
-        # \033[?25h into the suite's report. The rm -rf of SCAN_DIR is the part
-        # we actually want.
+        # Silenced because cleanup_on_exit -> leave_tui() unconditionally
+        # prints the show-cursor escape, which would otherwise spray \033[?25h
+        # into the suite's report. The rm -rf of SCAN_DIR is the part we
+        # actually want.
         cleanup_on_exit >/dev/null 2>&1
     fi
     # Belt and braces on an rm -rf: only ever remove a path this file minted.
@@ -61,12 +63,12 @@ _cdm_test_cleanup() {
 # Armed BEFORE the source, and again after. Both halves are load-bearing:
 #
 #   * before, because sourcing cdm can itself exit — a precondition failure
-#     (cdm:127-134), or under tests/mutate.sh a mutant that dies at source time.
-#     Arming afterwards leaves a window in which the sandbox leaks, which is not
-#     hypothetical: it stranded a pile of cdm-test-home.* dirs in $TMPDIR before
-#     this was moved up.
+#     (cdm's Darwin and $HOME guards), or under tests/mutate.sh a mutant that
+#     dies at source time. Arming afterwards leaves a window in which the
+#     sandbox leaks, which is not hypothetical: it stranded a pile of
+#     cdm-test-home.* dirs in $TMPDIR before this was moved up.
 #   * again after, because cdm installs its own `trap cleanup_on_exit EXIT` at
-#     source time (cdm:196), silently replacing this one.
+#     source time, silently replacing this one.
 trap _cdm_test_cleanup EXIT
 
 set --

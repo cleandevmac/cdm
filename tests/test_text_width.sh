@@ -1,14 +1,13 @@
 #!/bin/bash
-# is_ascii / _cw / dwidth / clip_plain / shorten_left (cdm:1218, 1227, 1237,
-# 1251, 681) — the "measure in display columns, never in characters or bytes"
-# machinery. Three
-# different numbers are in play and the layout only ever wants the third: under
-# bash 3.2 `printf '%d' "'中"` answers -28 — the *lead byte* as a signed char,
-# not the code point — so _cw's `v + 256` wrap is what every wide-character
-# result below actually rests on, and deleting it silently makes the whole file
-# measure 1 per character. The classification boundary is 0xE3/227, which puts
-# an em dash (0xE2) at one column and Kana (0xE3) at two with one byte between
-# them; both sides are pinned deliberately.
+# cdm's is_ascii / _cw / dwidth / clip_plain / shorten_left — the "measure in
+# display columns, never in characters or bytes" machinery. Three different
+# numbers are in play and the layout only ever wants the third: under bash 3.2
+# `printf '%d' "'中"` answers -28 — the *lead byte* as a signed char, not the
+# code point — so _cw's `v + 256` wrap is what every wide-character result below
+# actually rests on, and deleting it silently makes the whole file measure 1 per
+# character. The classification boundary is 0xE3/227, which puts an em dash
+# (0xE2) at one column and Kana (0xE3) at two with one byte between them; both
+# sides are pinned deliberately.
 #
 # The assertions are written as exact outputs *and* as the invariant that keeps
 # a menu row from wrapping — dwidth(clip(s, max)) <= max — because those catch
@@ -30,8 +29,8 @@ dw() { dwidth "$1"; printf '%s' "$_DW"; }
 # is indivisible: it either fits the remaining budget whole or must be dropped,
 # and a clipper that lets one straddle the edge returns a string that renders
 # wider than the row it was budgeted, wraps, and scrolls the frame on every
-# repaint. cdm:1354 states this contract outright ("Both clippers return at most
-# name_w *columns*, so this never goes negative").
+# repaint. render_menu() states this contract outright ("Both clippers return at
+# most name_w *columns*, so this never goes negative").
 fits() {
     local out
     out=$("$1" "$2" "$3") || return 1
@@ -59,8 +58,9 @@ assert_eq 1 "$(cw 'ж')" "Cyrillic ж (lead 0xD0) is one column"
 assert_eq 1 "$(cw '—')" "em dash U+2014 (lead 0xE2 = 226) is one column"
 assert_eq 1 "$(cw '…')" "ellipsis U+2026 (lead 0xE2) is one column — the clippers assume this"
 
-# Documented known gap (cdm:1157): U+2xxx symbols measure 1 but render 2. Pinned
-# as-is so a future fix is a deliberate change rather than a surprise.
+# Documented known gap (docs/DESIGN.md#display-columns): U+2xxx symbols measure
+# 1 but render 2. Pinned as-is so a future fix is a deliberate change rather
+# than a surprise.
 assert_eq 1 "$(cw '⚡')" "known gap: ⚡ U+26A1 measures 1 though it renders 2"
 
 # At and above the boundary: two columns.

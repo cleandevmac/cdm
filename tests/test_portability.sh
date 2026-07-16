@@ -40,9 +40,10 @@
 # removes (a) lines whose first non-blank character is `#`, which can never be a
 # command, and (b) a trailing comment introduced by whitespace-`#`-whitespace.
 # Requiring whitespace BEFORE the `#` is what keeps `${s#$num}` and `${line#*$us}`
-# (cdm:215, cdm:558) intact — a strip anchored on `#` alone would truncate real
-# code and go quiet. Verified against the real cdm: every line the strip touches
-# is a genuine trailing comment, and no code line carries ` # ` inside a string.
+# (in human_to_kb and parse_pattern_stream) intact — a strip anchored on `#`
+# alone would truncate real code and go quiet. Verified against the real cdm:
+# every line the strip touches is a genuine trailing comment, and no code line
+# carries ` # ` inside a string.
 #
 # Line numbers are kept through the strip (grep -n runs first) so a failure names
 # the offending cdm line instead of just saying "something matched".
@@ -103,12 +104,13 @@ assert_eq "" \
     "$(code_matching '(declare|typeset|local)[[:space:]]+(-[A-Za-z]+[[:space:]]+)*-[A-Za-z]*n([[:space:]]|$)')" \
     "no namerefs (local -n / declare -n) — bash 4.3"
 
-# ---- the frame is data, not a format string (cdm:1394, render_menu) ---------
+# ---- the frame is data, not a format string (render_menu) ------------------
 #
 # $buf is built from category names and repo paths. `printf "$buf"` would read
 # those as a FORMAT: a directory named `ha\nck` emits a real newline (the frame
 # outgrows its row budget and the terminal scrolls on every repaint) and one
 # named `esc\033[41m` injects escape sequences straight out of a filename.
+# The rule in full: docs/DESIGN.md#repaint.
 
 assert_eq "" \
     "$(code_matching 'printf[[:space:]]+"?\$\{?buf')" \
@@ -119,7 +121,7 @@ assert_eq "" \
 assert_ok "render_menu emits the frame via printf '%s' \"\$buf\"" \
     grep -q -F "printf '%s' \"\$buf\"" "$CDM_BIN"
 
-# ---- terminal size comes from fd 3 (cdm:1132-1141) -------------------------
+# ---- terminal size comes from fd 3 (term_rows, term_cols) ------------------
 #
 # Piped from curl, fd 0 IS the script, so `stty size` there fails outright — and
 # it fails QUIETLY: the tput fallback answers from static terminfo with a
@@ -136,7 +138,7 @@ assert_eq "" \
 assert_ok "term_rows and term_cols both size the terminal from fd 3" \
     test "$(code_lines | grep -c 'stty size')" -ge 2
 
-# ---- keypresses come from fd 3, never fd 0 (cdm:150) -----------------------
+# ---- keypresses come from fd 3, never fd 0 (docs/DESIGN.md#fd-3) -----------
 #
 # Same root cause, louder failure: redirecting fd 0 would eat the rest of the
 # program and break the pipe mid-run.
@@ -154,7 +156,8 @@ assert_eq "" \
 # cdm's five interactive reads: wait_any_key, the "Proceed? (y/N)" prompt, the
 # post-clean prompt, the menu key poll, and its escape-sequence follow-up. This
 # count is what catches `<&3` being dropped from the ONE interactive read that
-# carries no -s flag (the y/N prompt, cdm:1569) — the guard above cannot see it.
+# carries no -s flag (the y/N prompt in run_cleanup) — the guard above cannot
+# see it.
 assert_ok "all five interactive reads still use <&3" \
     test "$(code_lines | grep -c 'read.*<&3')" -ge 5
 

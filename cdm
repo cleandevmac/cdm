@@ -1,25 +1,9 @@
 #!/bin/bash
 
 # CleanDevMac (cdm) — https://cleandevmac.github.io
-# Interactive macOS cleanup for developer caches, build artifacts, temp data,
-# leftover data from uninstalled apps, and regenerable folders in your code repos.
-#
-# What it does:
-#   1. Reclaims space from regenerable caches / build output (Xcode, Go, Node,
-#      Gradle, Maven, Cargo, Python, Homebrew, Electron & browser caches, ...).
-#   2. Clears project junk in your repos (node_modules, dist, build, target,
-#      __pycache__, or anything your .gitignore ignores).
-#   3. Surfaces leftover data from apps that are no longer installed.
-#
-# Everything it can clean is described by JSON "rule" files (see the rules/
-# directory of the cleandevmac/cdm repo). The tool reads them from a local
-# folder, or downloads them, so it also runs standalone:
-#
-#   curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash
-#
-# Nothing is deleted without an itemized confirmation. Caches / build output are
-# removed permanently (they regenerate); orphaned app data and git-ignored files
-# are moved to the Trash so they can be restored. --dry-run only looks.
+# Interactive macOS cleanup for developer caches, build artifacts, project junk
+# and leftover data from uninstalled apps. Nothing is deleted without an itemized
+# confirmation; --dry-run only looks. What it cleans: docs/DESIGN.md#what-cdm-is
 
 set -u
 
@@ -32,17 +16,9 @@ else
     RED=; GREEN=; YELLOW=; BLUE=; PURPLE=; CYAN=; BOLD=; DIM=; REV=; NC=
 fi
 
-# Control sequences the menu's own layout is built from. Unlike the colours above
-# these are structural, not decoration — `--no-color` must never blank them — so
-# they live outside that branch.
-#
-# They are LITERAL characters, not the escape *text* "\033[K". The menu frame is
-# assembled out of category names and repo paths, and `printf "$frame"` would read
-# that data as a format string: a directory legitimately named `ha\nck` would emit
-# a real newline (pushing the frame past the bottom of the screen, so it scrolls on
-# every repaint) and one named `esc\033[41m` would inject raw escape sequences into
-# the terminal. Building the frame from literals lets render_menu print it with
-# `printf '%s'`, where a name is only ever data.
+# Control sequences the menu's layout is built from — structural, not decoration.
+# LITERAL characters, never the escape text "\033[K".
+# see docs/DESIGN.md#frame-literals
 ESC=$'\033'
 K="${ESC}[K"    # erase from the cursor to the end of the line
 NL=$'\n'
@@ -133,25 +109,18 @@ if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ] || [ ! -d "$HOME" ]; then
     exit 1
 fi
 
-# Pin a UTF-8 ctype for this script's own string math. bash 3.2 makes ${#s} and
-# ${s:0:n} count BYTES rather than characters unless LC_CTYPE says UTF-8 — and
-# piped from curl the locale is whatever the user's shell happened to export,
-# which is nothing at all over plain ssh, from launchd/cron, or with Terminal's
-# "Set locale environment variables on startup" unchecked. The whole TUI measures
-# and slices text with those two operators, so under a C ctype every rule's
-# description gets cut mid-em-dash into a replacement glyph and the keys line
-# mis-measures itself. Only LC_CTYPE is set: collation stays the user's business,
-# and the `LC_ALL=C sort` calls that need byte order still say so per-command.
+# Pin a UTF-8 ctype for this script's own string math: bash 3.2 counts ${#s} and
+# ${s:0:n} in BYTES otherwise, and piped from curl the locale is whatever the
+# user's shell exported — often nothing. Only LC_CTYPE; collation stays theirs.
+# see docs/DESIGN.md#locale-pin
 case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
     *UTF-8*|*utf-8*|*UTF8*|*utf8*) ;;
     *) unset LC_ALL; LC_CTYPE=UTF-8; export LC_CTYPE ;;
 esac
 
-# Keypresses are read from fd 3, never fd 0. Under `curl … | bash` fd 0 is the
-# script itself and bash is still reading the remaining lines from it, so
-# redirecting fd 0 would both steal the rest of the script and break the pipe
-# (curl: "Failure writing output to destination"). Probe in a subshell so a
-# missing/unusable /dev/tty produces no error and no permanent redirection.
+# Keypresses are read from fd 3, never fd 0: under `curl … | bash` fd 0 is the
+# script itself. Probed in a subshell so a missing /dev/tty is not an error.
+# see docs/DESIGN.md#fd-3
 if ( exec 3< /dev/tty ) 2>/dev/null; then
     exec 3< /dev/tty
 elif [ -t 0 ]; then
@@ -165,26 +134,17 @@ fi
 LOG_DIR="$HOME/.cleandevmac"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG_FILE="$LOG_DIR/clean.log"
-# The receipt of every clean ever run is appended to one file, so it only grows.
-# A disk-cleanup tool has no business being the thing quietly eating the disk —
-# cap it, keeping the most recent entries, which are the ones anyone ever reads
-# ("what did it delete just now?"). Rotation happens at the single point of
-# write, in run_cleanup; a scan or a --dry-run never touches the log at all.
+# clean.log only ever grows, and a disk-cleanup tool has no business eating the
+# disk. Capped at the single point of write, in run_cleanup.
+# see docs/DESIGN.md#log-cap
 LOG_MAX_BYTES=$((1024 * 1024))
 LOG_KEEP_BYTES=$((256 * 1024))
 
 SCAN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cdm.XXXXXX")
-# enter_tui / leave_tui — move the menu on and off the alternate screen.
-#
-# The split matters for more than tidiness. The alternate screen has no
-# scrollback, so anything written there is gone the moment we leave it: only the
-# menu — which repaints itself from scratch anyway — belongs on it. The two
-# scrolling *reports* (the cleanup receipt and the details view) are written on
-# the normal screen, where they land in the user's terminal history and survive
-# the run. That is also why every parting message comes after a leave_tui.
-#
-# Both are idempotent, so the EXIT trap can't double-restore a run that already
-# left, and the CLEAN path can leave once and rely on the N==0 exits leaving again.
+# enter_tui / leave_tui — move the menu on and off the alternate screen. Both are
+# idempotent. Anything printed after leave_tui survives the run; anything before
+# it dies with the alternate screen.
+# see docs/DESIGN.md#alternate-screen
 TUI_ON=0
 enter_tui() {
     [ "$TUI_ON" -eq 1 ] || { printf '\033[?1049h'; TUI_ON=1; }
@@ -208,19 +168,10 @@ trap 'exit 130' INT TERM
 # up after the cases even this cannot catch (SIGKILL, a panic).
 trap 'exit 129' HUP
 
-# sweep_stale_scan_dirs — remove the SCAN_DIRs that earlier runs stranded.
-#
-# cleanup_on_exit removes this run's, but no EXIT trap can run if the process is
-# killed outright, so a killed run leaves an empty cdm.XXXXXX behind forever and
-# they accumulate. A disk-cleanup tool quietly littering /var/folders is not a
-# joke that stays funny, so each run tidies up after the ones before it.
-#
-# This is the one rm in the script that does NOT go through is_safe_target, and
-# it cannot: that gate demands containment under $HOME, while these live in
-# $TMPDIR by construction. What replaces it is that the target is neither user
-# data nor pattern-derived — the glob is this script's own mktemp template,
-# literal and fixed-width, so it matches only directories cdm itself created.
-# Nothing read from a rules file reaches this.
+# sweep_stale_scan_dirs — remove the SCAN_DIRs that earlier runs stranded (no EXIT
+# trap runs when a process is killed outright). The one rm that does NOT go through
+# is_safe_target: its fixed-width glob over cdm's own mktemp template IS the gate.
+# see docs/DESIGN.md#sweep-stale-scan-dirs
 sweep_stale_scan_dirs() {
     local d
     for d in "${TMPDIR:-/tmp}"/cdm.??????; do
@@ -342,16 +293,9 @@ is_safe_target() {
 }
 
 # ---------------------------------------------------------------------------
-# JSON parsing (JXA — the JavaScriptCore parser shipped with every macOS; no
-# jq / python required). Emits a flat line protocol whose fields are separated
-# by US (\x1f, "\037"), NOT tab: US is not an IFS-whitespace character, so bash
-# `read` preserves EMPTY fields (an omitted icon must not shift the columns).
-# Records are newline-separated. Field layout per record type:
-#   SR<US>root | SPRUNE<US>name | SDEPTH<US>n | SREPOS<US>n           (scan config)
-#   C<US>kind<US>icon<US>name<US>method<US>default<US>desc            (category)
-#   P<US>path | D<US>dirname                                         (paths / dirs)
-#   L<US>path<US>strip | SKIP<US>prefix | SHARED<US>id                (orphan config)
-#   FILE<US>name | ORPHAN<US>name | ERR<US>message
+# JSON parsing (JXA — no jq or python required). Emits a flat line protocol
+# delimited by US (\x1f), not tab. Record layouts and why US:
+# see docs/DESIGN.md#json-line-protocol
 # ---------------------------------------------------------------------------
 parse_json_file() {
     osascript -l JavaScript - "$1" <<'JXA'
@@ -421,16 +365,10 @@ register_paths() {
     while IFS= read -r pat; do
         [ -n "$pat" ] || continue
         pat=$(expand_tilde "$pat")
-        # Expand the pattern with bash's own pathname expansion instead of
-        # `< <(compgen -G "$pat")`. The process substitution cost a fork per
-        # pattern, and a full rules set is ~250 of them: past roughly 250
-        # bash 3.2 stops making progress entirely and the scan hangs for
-        # minutes instead of finishing in seconds.
-        #
-        # IFS is emptied so the unquoted $pat still globs but does NOT
-        # word-split — patterns like "~/Library/Application Support/*/Code
-        # Cache" contain spaces, and splitting them matches nothing at all.
-        # An unmatched glob expands to itself, which the -e test discards.
+        # Expand with bash's own pathname expansion, not compgen/process substitution: a
+        # fork per pattern over ~250 patterns makes bash 3.2 stop making progress. IFS is
+        # emptied so unquoted $pat globs without word-splitting (patterns contain spaces).
+        # see docs/DESIGN.md#glob-expansion
         local __ifs="$IFS"; IFS=
         for m in $pat; do
             IFS="$__ifs"
@@ -631,20 +569,9 @@ parse_orphan_stream() {
 }
 
 # ---------------------------------------------------------------------------
-# Project-junk scanning (node_modules, dist, build, target, git-ignored, ...)
-#
-# Junk is grouped BY PROJECT — one category per git repository — so you can pick
-# exactly which projects to clean and see what each holds. Junk that isn't inside
-# a repo is skipped (it's almost always a tool/language cache the cache rules
-# already cover, not one of your projects). Within a project every item keeps its
-# own method: known regenerable build/dependency dirs are deleted (they rebuild),
-# while any other git-ignored entry (local .env, config, logs) is moved to the
-# Trash so it can be recovered.
-#
-# The helpers below (classify_method / project_key / shorten_left /
-# flush_project_category) are only ever called from scan_projects and read its
-# locals through bash dynamic scope — the same pattern parse_pattern_stream and
-# flush_pattern_category use.
+# Project-junk scanning (node_modules, dist, build, target, git-ignored, ...),
+# grouped BY PROJECT — one category per git repo.
+# see docs/DESIGN.md#project-scanning
 # ---------------------------------------------------------------------------
 
 # classify_method <basename> — echo the method a known regenerable dir name maps
@@ -660,11 +587,9 @@ classify_method() {
 }
 
 # project_key <path> — echo the nearest enclosing git repo root (longest match
-# wins; REPO_ROOTS is sorted longest first), or EMPTY when the path is not inside
-# any repo. A "project" is a git repo: junk that isn't in one is almost always a
-# tool/language cache (Go stdlib, global npm, cargo/npx cache, editor
-# extensions), which the cache categories already handle and which must not be
-# swept up here — so callers skip a path with no key.
+# wins), or EMPTY when the path is not inside any repo. Callers skip a path with
+# no key.
+# see docs/DESIGN.md#project-key
 project_key() {
     local path="$1" j=0 r
     while [ "$j" -lt "${#REPO_ROOTS[@]}" ]; do
@@ -681,12 +606,9 @@ project_key() {
 shorten_left() {
     local s="$1" max="$2"
     [ "$max" -lt 1 ] && { printf ''; return; }
-    # Fast path: no wide characters possible, so columns == characters. The tail
-    # is taken by counting an offset from the LEFT, and not with the obvious
-    # ${s: -$((max - 1))}: at max 1 that reads ${s: -0}, and -0 is not negative,
-    # so bash takes it as offset 0 — the whole string — and hands back '…abcdef'
-    # for a one-column budget. The branch needs ${#s} > max to be reached, so the
-    # offset below is always >= 2 and never runs off either end.
+    # Fast path: no wide characters possible, so columns == characters. The tail is
+    # taken by an offset from the LEFT, deliberately not ${s: -$((max - 1))}.
+    # see docs/DESIGN.md#shorten-left-fast-path
     if is_ascii "$s"; then
         if [ "${#s}" -le "$max" ]; then printf '%s' "$s"
         else printf '…%s' "${s:$((${#s} - max + 1))}"; fi
@@ -747,13 +669,9 @@ EOF
     local uniq_names
     uniq_names=$(printf '%s\n' "${KN[@]+"${KN[@]}"}" | grep -v '^$' | sort -u)
 
-    # One find pass per root captures BOTH repo roots (a .git DIRECTORY — needed
-    # to group junk by project even when git-ignored scanning is off) AND
-    # regenerable target dirs, while pruning heavy/irrelevant trees. Only a real
-    # .git folder counts as a project root: a bare ".git" file (git worktrees /
-    # submodules) is intentionally ignored, so a folder is a "project" only when
-    # it directly contains a .git directory. .git is captured in its own branch
-    # (not the prune list) so we learn the repo but never descend it.
+    # One find pass per root captures BOTH repo roots and regenerable target dirs
+    # while pruning heavy trees. Only a real .git directory counts as a project root.
+    # see docs/DESIGN.md#find-pass
     local name_expr="" prune_expr="" first
     first=1
     while IFS= read -r d; do
@@ -841,11 +759,9 @@ EOF
     fi
     [ -s "$pairs" ] || return 0
 
-    # De-duplicate and drop any item nested under another kept item (a git-ignored
-    # file inside a dir we already delete) — sorting by path puts an ancestor
-    # immediately before its descendants, so a single prefix test suffices; this
-    # also keeps the per-project size total from double-counting. Then group by
-    # project key for stable, contiguous per-project categories.
+    # De-duplicate and drop any item nested under another kept item; sorting by path
+    # puts an ancestor immediately before its descendants. Then group by project key.
+    # see docs/DESIGN.md#dedup-nesting
     local sorted="$SCAN_DIR/proj_sorted"
     LC_ALL=C sort -t "$us" -k3 "$pairs" \
         | awk -F "$us" '{ if ($3==kept || (kept!="" && substr($3,1,length(kept)+1)==kept"/")) next; print; kept=$3 }' \
@@ -1105,12 +1021,10 @@ prune_zero() {
     N=$w
 }
 
-# sort_by_size — order the menu biggest-first, so the rows worth the most disk
-# are the ones you land on. Sorts an index list through `sort` rather than in
-# the shell: bash 3.2 (what macOS ships) has no associative arrays, and the
-# ties matter — `sort -s` keeps equal-sized rows in their rules-file order, so
-# the grouping the JSON authors chose survives.
-# Must run after compute_sizes; re-run after anything that changes CAT_KB.
+# sort_by_size — order the menu biggest-first. Sorts through `sort` rather than in
+# the shell (bash 3.2 has no associative arrays); `sort -s` keeps equal-sized rows
+# in rules-file order. Must run after compute_sizes; re-run after CAT_KB changes.
+# see docs/DESIGN.md#sort-by-size
 sort_by_size() {
     local order i j=0
     order=$(for i in $(cat_indices); do printf '%s\t%s\n' "${CAT_KB[$i]}" "$i"; done \
@@ -1161,16 +1075,10 @@ SCROLL=0
 # Set by the SIGWINCH trap (terminal resized), consumed by the interactive loop
 # to trigger a redraw at the new size. Cleared just before each blocking read.
 NEED_REDRAW=0
-# Terminal size. Ask fd 3 — the one handle on the terminal this script is
-# guaranteed to hold — and never fd 0: under `curl … | bash` fd 0 is the *script*,
-# so `stty size` there fails outright. The tput fallback cannot cover for that,
-# because tput sizes its *output* fd and both callers below run inside $(...),
-# where fd 1 is a pipe — so tput answers from static terminfo (24x80) rather than
-# from the window. $LINES/$COLUMNS are empty too (bash only maintains them when
-# interactive). All three together silently pinned every piped run — which is
-# very nearly every run — to a 24x80 layout, ignoring the rest of the window.
-# The tput/$LINES/constant tail stays on for the no-tty case, where fd 3 is
-# /dev/null and `stty size <&3` correctly reports nothing.
+# Terminal size. Ask fd 3 — never fd 0, which under `curl … | bash` is the script.
+# The tput/$LINES/constant tail is for the no-tty case only; it cannot cover for
+# fd 0, and every fallback that ends in a constant looks like it works.
+# see docs/DESIGN.md#terminal-size
 term_rows() {
     local n; n=$(stty size <&3 2>/dev/null | awk '{print $1}')
     case "$n" in ''|0|*[!0-9]*) n=$(tput lines 2>/dev/null) ;; esac
@@ -1186,35 +1094,11 @@ term_cols() {
     printf '%s' "$n"
 }
 
-# Display columns, which are not the same thing as characters: an East Asian Wide
-# character (CJK, Kana, Hangul, fullwidth forms) and an emoji each take TWO. The
-# layout below budgets rows in columns, so measuring in characters would let a
-# repo path under ~/プロジェクト render wider than its row was sized for — it
-# wraps, the frame grows past `rows`, and the screen scrolls on every repaint.
+# Display columns, which are not characters: CJK, Kana, Hangul and emoji take TWO.
 #
-# Classify by UTF-8 lead byte, which printf hands back as a signed char: 0xE3 (227)
-# is where U+3000 and up begins — CJK/Kana/Hangul, and 0xF0 for emoji — so >= 227
-# is two columns and anything below is one. That deliberately leaves Latin,
-# Vietnamese, Greek and Cyrillic on the one-column side, which is correct for them.
-# Known gap: a handful of U+2xxx symbols (⚡ ☕ ⛅) measure 1 but render 2. They only
-# ever appear as rule icons, which sit in an unpadded column of their own, so every
-# row shifts alike and nothing misaligns.
-#
-# is_ascii <text> — true when every character is ASCII, so no character can be
-# wide and columns == characters. shorten_left (above), dwidth and clip_plain
-# (below) hang their fast paths on it.
-#
-# It must be a character CLASS and never a bracket range, which is the shape this
-# was first written in and the bug that shipped: a range is resolved by
-# LC_COLLATE, and cdm pins only LC_CTYPE (see the top of the file). Under any
-# locale but C/POSIX — 284 of the 288 installed on a stock macOS — the letters
-# and digits collate *above* `~`, so ' ' through '~' is a punctuation-only
-# interval and `*[!\ -~]*` answered "not ASCII" for `abc`. All three fast paths
-# were unreachable for very nearly every user. It hid because it failed *open*,
-# into a slower path that is correct: no wrong output, just many times the work
-# on the very strings the fast path exists to make cheap, and no assertion about
-# output can see that. [[:ascii:]] is LC_CTYPE-based and cannot regress that way.
-# [[:print:]] is not a substitute — it takes the fast path for CJK.
+# is_ascii <text> — true when no character can be wide, so columns == characters.
+# It must be a character CLASS, never a bracket range.
+# see docs/DESIGN.md#display-columns
 is_ascii() {
     case "$1" in
         *[![:ascii:]]*) return 1 ;;
@@ -1269,11 +1153,10 @@ clip_plain() {
     printf '%s…' "$out"
 }
 
-# _k_add <cap> <label> — append one "KEY label" pair to the line being built by
-# build_keys_line. Writes both forms in lockstep: _S is styled, _P is a plain
-# shadow of the same display width, since _S is unmeasurable (its escapes carry
-# no columns). A cap is ${#cap}+2 wide in BOTH modes — reverse video pads with a
-# space either side, --no-color brackets it — so _P's " cap " matches each.
+# _k_add <cap> <label> — append one "KEY label" pair to the line build_keys_line is
+# building. Writes _S (styled) and _P (a plain shadow of the same display width) in
+# lockstep, since _S is unmeasurable.
+# see docs/DESIGN.md#k-add
 _k_add() {
     local cap="$1" lab="$2"
     [ -n "$_P" ] && { _S="$_S · "; _P="$_P · "; }
@@ -1282,17 +1165,10 @@ _k_add() {
     return 0
 }
 
-# build_keys_line <cols> — build the shortcut hint line to fit <cols> on ONE
-# physical line. Sets _S (styled, ready to print) and _P (plain, for measuring).
-#
-# This line cannot be clip_plain'd like the item rows and the description: its
-# right edge holds `q quit`, the one key a user must never lose. So it degrades
-# by tier instead of by truncation, shedding first the labels whose key already
-# implies them (↑↓ move, Enter details), then the rest. Widths are mode-
-# independent, so --no-color picks the same tier.
-#   1: everything spelled out          95 cols (81 under --dry-run)
-#   2: self-evident labels dropped     76 cols (64)
-#   3: caps only                       44 cols (38)
+# build_keys_line <cols> — build the shortcut hint line to fit <cols> on ONE line.
+# Sets _S (styled) and _P (plain, for measuring). Degrades by tier, never by
+# truncation: its right edge holds `q quit`, the one key a user must not lose.
+# see docs/DESIGN.md#keys-line
 build_keys_line() {
     local cols="$1" tier
     if [ -n "$REV" ]; then _ko="${REV} "; _kc=" ${NC}"; else _ko="["; _kc="]"; fi
@@ -1323,23 +1199,15 @@ render_menu() {
     local rows cols; rows=$(term_rows); cols=$(term_cols)
     case "$rows" in ''|*[!0-9]*) rows=24 ;; esac
     case "$cols" in ''|*[!0-9]*) cols=80 ;; esac
-    # Chrome is title, status, keys, ↑-scroll, ↓-scroll, description; every other
-    # terminal row goes to the item list. Item rows and the description are clipped
-    # to the terminal width below and the keys line is tier-fitted to it, so each
-    # is one physical line and this count is exact — the list fills the screen, and
-    # the frame is exactly `rows` lines tall (the last one unterminated; see the
-    # newline strip at the end).
-    # keys_h is measured rather than assumed to be 1: below ~44 columns even the
-    # narrowest tier wraps, and the list must still not overrun the screen.
+    # Chrome is title, status, keys, the two scroll hints and the description; every
+    # other row goes to the item list. keys_h is measured, not assumed to be 1.
+    # see docs/DESIGN.md#menu-chrome
     build_keys_line "$cols"
     local keys_h=$(( (${#_P} + cols - 1) / cols ))
     [ "$keys_h" -lt 1 ] && keys_h=1
-    # A window too short to seat the full chrome *and* a usable list sheds the
-    # optional chrome — the description first, then the two scroll indicators —
-    # rather than emit a frame taller than the screen. Overrunning would scroll
-    # the terminal on every repaint, which is far worse than a missing hint line:
-    # it stacks a copy of the menu into the scrollback each time. Reachable now
-    # that the real window size is honoured; a tmux split can be a few rows tall.
+    # A window too short for the full chrome AND a usable list sheds the optional
+    # chrome rather than emit a frame taller than the screen.
+    # see docs/DESIGN.md#short-windows
     local show_desc=1 show_ind=1
     local viewport=$((rows - 5 - keys_h))
     [ "$viewport" -lt 3 ] && { show_desc=0; viewport=$((rows - 4 - keys_h)); }
@@ -1348,23 +1216,16 @@ render_menu() {
     if [ "$CURSOR" -lt "$SCROLL" ]; then SCROLL=$CURSOR; fi
     if [ "$CURSOR" -ge $((SCROLL + viewport)) ]; then SCROLL=$((CURSOR - viewport + 1)); fi
     [ "$SCROLL" -lt 0 ] && SCROLL=0
-    # Clamp to the last page. Every correction above only pulls SCROLL toward the
-    # cursor; none bounds it by the list's end. When the window *grows*, viewport
-    # grows with it, and a SCROLL left over from the smaller window would strand
-    # the list partway down — a few rows under a bogus "↑ N more above", with the
-    # rest of the window blank.
+    # Clamp to the last page: every correction above only pulls SCROLL toward the
+    # cursor, none bounds it by the list's end.
+    # see docs/DESIGN.md#scroll-clamp
     local max_scroll=$((N - viewport)); [ "$max_scroll" -lt 0 ] && max_scroll=0
     [ "$SCROLL" -gt "$max_scroll" ] && SCROLL=$max_scroll
 
-    # Name column width. The fixed furniture around it — cursor, box, icon, size
-    # and the gaps — is 20 display cols, so a row measures 20 + name_w and the
-    # summary that follows takes what's left. Size the column to the longest name
-    # rather than to a constant, so a wide window spends its columns showing whole
-    # project paths instead of padding. Clamped so the summary keeps a usable
-    # share and a narrow window still fits. Forks nothing; this runs every frame.
-    # Measured in display columns, not characters — the clippers below honour the
-    # same unit, so the row is exactly as wide as it was budgeted no matter what
-    # script the names are written in.
+    # Name column width. The fixed furniture around it is 20 display cols. Sized to the
+    # longest name, clamped so the summary keeps a usable share. Measured in display
+    # columns, not characters. Forks nothing; this runs every frame.
+    # see docs/DESIGN.md#name-column
     local name_w=0 sum_any=0 i
     i=0
     while [ "$i" -lt "$N" ]; do
@@ -1378,11 +1239,9 @@ render_menu() {
     [ "$name_w" -gt "$name_max" ] && name_w=$name_max
     [ "$name_w" -lt 12 ] && name_w=12
     local sum_w=$((cols - name_w - 24))
-    # One run of blanks, sliced per row to pad the name column. printf's own
-    # `%-Ns` pads to N *bytes*, not characters, so it short-changes every name
-    # carrying a non-ASCII byte — a repo path with diacritics ("Tiếng-Việt" is 10
-    # characters but 14 bytes) gets no padding at all and drags the size column
-    # left. Built once per frame rather than per row; no forks either way.
+    # One run of blanks, sliced per row to pad the name column: printf's %-Ns pads to
+    # BYTES, so it short-changes every name carrying a non-ASCII byte.
+    # see docs/DESIGN.md#padding
     local blanks="" bi=0
     while [ "$bi" -lt "$name_w" ]; do blanks="$blanks "; bi=$((bi + 1)); done
 
@@ -1404,11 +1263,9 @@ render_menu() {
         local box size nm line
         if [ "${CAT_SEL[$i]}" = "1" ]; then box="[${GREEN}✓${NC}]"; else box="[ ]"; fi
         size=$(human_kb "${CAT_KB[$i]}")
-        # Clip the name to the name column so a long name can't push the line wide.
-        # Project rows are named by path, where the tail — the repo itself — is
-        # what identifies the row and the leading directories are the expendable
-        # part, so those clip from the left. Every other name is a label, and
-        # clips from the right.
+        # Clip the name to its column. Project rows are named by path, whose tail
+        # identifies the row, so those clip from the left; every other name clips right.
+        # see docs/DESIGN.md#name-clipping
         if [ "${CAT_METHOD[$i]}" = "project" ]; then nm=$(shorten_left "${CAT_NAME[$i]}" "$name_w")
         else nm=$(clip_plain "${CAT_NAME[$i]}" "$name_w"); fi
         # Both clippers return at most name_w *columns*, so this never goes
@@ -1437,33 +1294,22 @@ render_menu() {
         local desc; desc=$(clip_plain "${CAT_DESC[$CURSOR]}" $((cols - 1)))
         buf+="${DIM}${desc}${NC}${K}${NL}"
     fi
-    # Drop the frame's final newline. That line sits on the terminal's bottom row,
-    # and a newline *there* scrolls the whole screen up one — dragging the title
-    # off the top on every single frame. (Invisible until the size was honoured,
-    # since a 24-line frame never reached the bottom of a real window.) Stripped
-    # here rather than special-cased at each emission, because which line lands
-    # last depends on how much chrome the window was tall enough to keep.
+    # Drop the frame's final newline: on the terminal's bottom row a newline scrolls
+    # the screen, dragging the title off the top on every frame.
+    # see docs/DESIGN.md#last-newline
     buf="${buf%$NL}"
-    # Repaint in place: home, overwrite every line (each already ends in $K, which
-    # clears its tail), then erase-below to wipe whatever a shorter frame left
-    # behind. Deliberately not \033[2J: erasing the *display* scrolls the outgoing
-    # frame into the scrollback on Terminal.app and iTerm2, so every redraw stacked
-    # another copy of the menu up there — and resizing the window reflowed the
-    # whole pile back into view.
-    #
-    # '%s', never printf "$buf": the frame contains repo paths, and as a format
-    # string a directory named `ha\nck` or `esc\033[41m` would inject newlines and
-    # escape sequences of its own. These two are constant formats with no data.
+    # Repaint in place: home, overwrite every line (each ends in $K), then erase-below.
+    # Deliberately not \033[2J, which scrolls the outgoing frame into the scrollback.
+    # '%s', never printf "$buf" — the frame contains repo paths.
+    # see docs/DESIGN.md#repaint
     printf '\033[H'
     printf '%s' "$buf"
     printf '\033[J'
 }
 
-# wait_any_key — block until a real keypress. On shells whose read returns when
-# a trapped SIGWINCH (terminal resize) fires, that wake carries no key; absorb it
-# so a resize never dismisses a "press any key" prompt. (On bash 3.2 read simply
-# restarts, so this just blocks until a key — same intended effect.) Stops on a
-# real key or on stdin EOF.
+# wait_any_key — block until a real keypress, absorbing a SIGWINCH wake so a
+# resize never dismisses a "press any key" prompt. Stops on a key or stdin EOF.
+# see docs/DESIGN.md#wait-any-key
 wait_any_key() {
     while ! IFS= read -r -s -n 1 _ <&3 2>/dev/null; do
         [ "${NEED_REDRAW:-0}" = 1 ] || break
@@ -1603,12 +1449,9 @@ print_plan() {
     echo "${BLUE}=============================================${NC}"
 }
 
-# rotate_log — cap clean.log, keeping the newest LOG_KEEP_BYTES.
-#
-# Deliberately truncate-in-place rather than clean.log.1 + clean.log.2: a
-# rotation scheme that keeps N generations still grows without bound in the
-# only dimension that matters here (total bytes on disk), which is the thing
-# this exists to stop. One file, one ceiling.
+# rotate_log — cap clean.log, keeping the newest LOG_KEEP_BYTES. Truncates in
+# place rather than keeping N generations: one file, one ceiling.
+# see docs/DESIGN.md#rotate-log
 rotate_log() {
     [ -f "$LOG_FILE" ] || return 0
     local sz
@@ -1803,11 +1646,9 @@ if [ "$ASSUME_YES" -eq 1 ]; then
 fi
 
 # ---- Interactive menu ------------------------------------------------------
-# Redraw on terminal resize. A SIGWINCH sets NEED_REDRAW; the read below polls
-# with a 1s timeout because bash 3.2's read does NOT return early when a signal
-# fires (it restarts) — so we can't rely on the trap interrupting the read and
-# instead wake at least once a second to act on the flag. To avoid flicker the
-# menu is re-rendered only when something changed ($dirty): a keypress or resize.
+# Redraw on terminal resize. SIGWINCH sets NEED_REDRAW and the read below polls
+# with a 1s timeout: bash 3.2's read does not return early when a signal fires.
+# see docs/DESIGN.md#resize-redraw
 trap 'NEED_REDRAW=1' WINCH
 # Draw the menu on the alternate screen. It is a full-screen app that repaints on
 # every keypress, and on the normal screen each repaint left a copy behind in the

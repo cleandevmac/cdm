@@ -1,5 +1,5 @@
 #!/bin/bash
-# The "Small helpers" (cdm:199-304), minus is_safe_target — that one ends the
+# The "Small helpers" section of cdm, minus is_safe_target — that one ends the
 # section and has tests/test_safe_target.sh to itself. The eight left over are
 # the ones the rest of the script leans on: small enough to read as
 # self-evidently correct, and each turning on a single boundary, a unit, or a
@@ -23,10 +23,10 @@
 #     size big enough" assertion cannot see it: `du` defaults to 512-byte blocks
 #     on macOS, so dropping -k still returns a plausible integer, just doubled.
 #     Its result is bounded on both sides for that reason.
-#   * engine_ok is the command-INJECTION guard (cdm:245-248), not a typo check:
-#     engine names arrive from a rules JSON file and reach a shell command. The
-#     load-bearing assertions are therefore the refusals, and they have to be
-#     the shapes an attacker would actually write, not just misspellings.
+#   * engine_ok is the command-INJECTION guard, not a typo check: engine names
+#     arrive from a rules JSON file and reach a shell command. The load-bearing
+#     assertions are therefore the refusals, and they have to be the shapes an
+#     attacker would actually write, not just misspellings.
 #   * is_nonempty tests `-e OR -L` and globs `.[!.]*` next to `*`. Both look
 #     redundant; neither is. A dangling symlink fails -e, and a directory
 #     holding only dotfiles is invisible to `*`. Each gets a fixture that
@@ -51,7 +51,7 @@
 t_rc() { "$@"; echo $?; }
 t_is_int() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
 
-# ---- human_kb (cdm:202): KB / MB / GB thresholds ---------------------------
+# ---- human_kb(): KB / MB / GB thresholds -----------------------------------
 #
 # Every boundary is asserted from both sides. The KB branch is plain `echo`, so
 # it is the only one that echoes its input back verbatim.
@@ -74,7 +74,7 @@ assert_eq "1.50 GB"  "$(human_kb 1572864)"  "human_kb keeps 2 decimals in GB"
 assert_eq "0 KB"     "$(human_kb)"          "human_kb with no argument"
 assert_eq "0 KB"     "$(human_kb "")"       "human_kb with an empty argument"
 
-# ---- human_to_kb (cdm:212): Docker-style sizes -----------------------------
+# ---- human_to_kb(): Docker-style sizes -------------------------------------
 #
 # Result is whole KiB, truncated by awk's %d (never rounded).
 
@@ -111,7 +111,7 @@ assert_eq "1048576"    "$(human_to_kb 1GiB)"   "human_to_kb 1GiB — binary, and
 # Garbage yields 0 — the scan must not inflate a total from a size it could not
 # read. Each of these takes a different route to 0:
 #   ""       -> ${1:-0} substitutes "0", so the unit is empty and mult=1.
-#   "abc"    -> the number prefix is empty, caught by the '' guard (cdm:216).
+#   "abc"    -> the number prefix is empty, caught by human_to_kb's '' guard.
 #   "12XB"   -> the number parses, the unit falls through to the `*)` arm.
 #   "1.2.3GB"-> "1.2.3" passes the *[!0-9.]* guard (it IS only digits and dots)
 #               and reaches awk, where `1.2 .3` is an implicit CONCATENATION,
@@ -124,7 +124,7 @@ assert_eq "0" "$(human_to_kb abc)"       "human_to_kb non-numeric"
 assert_eq "0" "$(human_to_kb 12XB)"      "human_to_kb unknown unit"
 assert_eq "0" "$(human_to_kb 1.2.3GB)"   "human_to_kb malformed number"
 
-# ---- expand_tilde (cdm:271) ------------------------------------------------
+# ---- expand_tilde() --------------------------------------------------------
 
 assert_eq "$HOME/x" "$(expand_tilde "~/x")" "expand_tilde ~/x"
 assert_eq "$HOME"   "$(expand_tilde "~")"   "expand_tilde bare ~"
@@ -147,7 +147,7 @@ assert_eq "$HOME/Library/Application Support/Code" \
     "$(expand_tilde "~/Library/Application Support/Code")" \
     "expand_tilde preserves spaces"
 
-# ---- engine_ok (cdm:248): the injection whitelist --------------------------
+# ---- engine_ok(): the injection whitelist ----------------------------------
 
 assert_ok "docker is a known engine"  engine_ok docker
 assert_ok "podman is a known engine"  engine_ok podman
@@ -169,7 +169,7 @@ assert_fail "trailing whitespace"           engine_ok "docker "
 # make "*" match every arm of the case.
 assert_fail "a glob"                        engine_ok "*"
 
-# ---- is_nonempty (cdm:257) -------------------------------------------------
+# ---- is_nonempty() ---------------------------------------------------------
 
 mkdir -p "$HOME/ne" || exit 1
 
@@ -214,7 +214,7 @@ assert_fail "a nonexistent path" is_nonempty "$HOME/ne/no-such-thing"
 assert_fail "a nonexistent path under a nonexistent dir" \
     is_nonempty "$HOME/ne/no-such-dir/no-such-thing"
 
-# ---- du_kb (cdm:249) -------------------------------------------------------
+# ---- du_kb() ---------------------------------------------------------------
 #
 # A missing path is 0, not empty: the caller sums this into CAT_KB with $((...)),
 # where an empty string is a syntax error rather than a zero.
@@ -240,11 +240,11 @@ assert_ok "du_kb reports KB, not 512-byte blocks or bytes" \
 assert_ok "du_kb of a directory sums its contents" \
     test "$(du_kb "$HOME/du")" -ge 256
 
-# ---- cat_indices (cdm:267) -------------------------------------------------
+# ---- cat_indices() ---------------------------------------------------------
 #
 # Reads the global N. Set it here rather than inheriting it: at this point cdm's
-# top level has left N=0 (cdm:354), which would make the N=0 case pass without
-# the function being involved at all.
+# category-model declarations have left N=0, which would make the N=0 case pass
+# without the function being involved at all.
 N=3
 assert_eq "0
 1
@@ -258,7 +258,7 @@ assert_eq "0" "$(cat_indices)" "cat_indices with N=1"
 N=0
 assert_eq "" "$(cat_indices)" "cat_indices with N=0 yields nothing"
 
-# ---- bounded (cdm:231) -----------------------------------------------------
+# ---- bounded() -------------------------------------------------------------
 #
 # Timeouts are 1s throughout: the suite must not pay for them.
 

@@ -4,10 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-CleanDevMac (`cdm`) is a single ~1850-line bash script that reclaims disk space on macOS from
+CleanDevMac (`cdm`) is a single ~1700-line bash script that reclaims disk space on macOS from
 developer caches, build artifacts, per-repo project junk, Docker/Podman, and orphaned app data.
 `cdm` is the whole program — `rules/*.json` is its data. There is no build step and no dependency
 manifest. Tests live in `tests/` and are plain bash with no framework behind them (see Commands).
+
+`docs/DESIGN.md` holds the *why*. `cdm` itself carries the code and a one-line summary per
+function, and points at the design notes with `# see docs/DESIGN.md#<anchor>` — the script is
+what gets piped into a user's shell, so it stays readable as a program. Rationale that runs to a
+paragraph belongs in the design notes, at the anchor the code already points to; do not grow it
+back into `cdm`.
 
 Users run it by piping a GitHub release asset straight into bash:
 
@@ -254,6 +260,12 @@ name, and the README's downloads badge counts fetches of that asset.
 
 ## Conventions
 
+- Long rationale lives in `docs/DESIGN.md`, never in `cdm`. Each site in the script keeps a one-line
+  summary and a `# see docs/DESIGN.md#<anchor>` pointer. When you change one of those decisions,
+  update the anchored section — a design note that no longer describes the code is worse than none.
+- Cite code by **name**, not by line number. `cdm:1484` was the old habit and every one of those
+  citations rotted: they were 38–90 lines stale before anyone noticed, because nothing verifies a
+  number in a comment. Say `is_safe_target()` instead — it survives every edit above it.
 - Rules are fetched from raw `main` at runtime, so a rules change is live for piped users the moment
   it merges — before any release. Landing-page and README claims about what `cdm` cleans must track
   `rules/`.

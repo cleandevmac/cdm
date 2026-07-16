@@ -1,21 +1,21 @@
 #!/bin/bash
-# is_safe_target (cdm:278) — the gate every deletion passes through, and the one
+# is_safe_target() in cdm — the gate every deletion passes through, and the one
 # function here where a false positive means destroying a stranger's data.
 #
-# Ordering trap, and the reason so many fixtures below get mkdir'd first: the
-# existence check (`[ -e "$p" ] || return 1`, cdm:287) runs BEFORE the
-# protected-set case (cdm:289). Assert that ~/Documents is refused without
-# creating it and the assertion passes for the wrong reason — the path was
-# merely absent — and it would keep passing with the entire protected block
-# deleted. Every "must refuse" fixture is therefore made to exist first, so the
-# refusal can only come from the rule under test.
+# Ordering trap, and the reason so many fixtures below get mkdir'd first: within
+# is_safe_target the existence check (`[ -e "$p" ] || return 1`) runs BEFORE the
+# protected-set case. Assert that ~/Documents is refused without creating it and
+# the assertion passes for the wrong reason — the path was merely absent — and
+# it would keep passing with the entire protected block deleted. Every "must
+# refuse" fixture is therefore made to exist first, so the refusal can only come
+# from the rule under test.
 
 . "$(dirname "$0")/lib.sh"
 
 # ---- fixtures --------------------------------------------------------------
 
-# The protected set, per CLAUDE.md and cdm:289-295. These must exist for the
-# refusals below to prove anything.
+# The protected set, per CLAUDE.md and the protected-set case in is_safe_target.
+# These must exist for the refusals below to prove anything.
 for d in Documents Desktop Downloads Pictures Movies Music .ssh .gnupg \
          "Library/Mobile Documents"; do
     mkdir -p "$HOME/$d" || exit 1

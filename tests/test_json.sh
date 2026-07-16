@@ -1,6 +1,7 @@
 #!/bin/bash
-# parse_json_file (cdm:318) — the JXA JSON parser and the flat line protocol it
-# emits. The layout is documented at cdm:306-317; this file pins it.
+# parse_json_file() — the JXA JSON parser and the flat line protocol it emits.
+# The layout is documented at docs/DESIGN.md#json-line-protocol; this file pins
+# it.
 #
 # The subtlety, and the reason this file exists: the fields are separated by US
 # (\x1f), NOT by tab. That looks like an arbitrary taste call and is not. Tab is
@@ -19,9 +20,8 @@
 # round trip untouched. Both are asserted on the same record.
 #
 # Every fixture is read back with the exact idiom the real consumers use —
-# `IFS=$'\037' read -r ...` (parse_pattern_stream, cdm:567; parse_orphan_stream,
-# cdm:586) — so what is under test is the protocol *as consumed*, not merely as
-# printed.
+# `IFS=$'\037' read -r ...` in parse_pattern_stream() and parse_orphan_stream()
+# — so what is under test is the protocol *as consumed*, not merely as printed.
 #
 # This shells out to osascript once per fixture, which is slow (~100ms each), so
 # the fixtures are few and each covers as much of the layout as it honestly can.
@@ -38,9 +38,9 @@ TAB=$'\t'
 # and % in the data are inert.
 rec() { printf '%s\n' "$2" | sed -n "$1p"; }
 
-# read_c_record <line> — split one record exactly the way parse_pattern_stream
-# does (cdm:557-569): peel the type off at the first US, then field-split the
-# remainder with IFS=US via a heredoc.
+# read_c_record <line> — split one record exactly the way parse_pattern_stream()
+# does: peel the type off at the first US, then field-split the remainder with
+# IFS=US via a heredoc.
 R_TYP=""; R1=""; R2=""; R3=""; R4=""; R5=""; R6=""
 read_c_record() {
     local line="$1" rest
@@ -193,12 +193,12 @@ assert_eq "0"         "$R5"     "default:false becomes 0"
 
 # ---- THE headline: an omitted icon must not shift the columns --------------
 #
-# cdm:335 emits `c.icon || ''`, so the icon field is always present and always
-# in position 2 — empty when the rule omits it. Because the separator is US and
-# not IFS whitespace, `read` hands that empty field to $R2 and leaves every
-# later field where it belongs. Drop the icon argument from the emit, or swap
-# the separator for a tab, and name/method/default/desc all slide one column
-# left; the assertions below are what notices.
+# parse_json_file()'s C record emits `c.icon || ''`, so the icon field is always
+# present and always in position 2 — empty when the rule omits it. Because the
+# separator is US and not IFS whitespace, `read` hands that empty field to $R2
+# and leaves every later field where it belongs. Drop the icon argument from the
+# emit, or swap the separator for a tab, and name/method/default/desc all slide
+# one column left; the assertions below are what notices.
 
 NOICON1=$(rec 1 "$P_NOICON")
 
@@ -239,8 +239,8 @@ assert_eq ""             "$R6" "bare category: empty desc"
 # and the clearest statement of why the separator is what it is. Take the very
 # record above, change ONLY the separator byte to a tab, feed it to the SAME
 # reader, and watch the columns slide: the empty icon vanishes and every later
-# field arrives one slot to the left. If this ever stops shifting, the comment
-# at cdm:308-310 has stopped being true.
+# field arrives one slot to the left. If this ever stops shifting, the rationale
+# in docs/DESIGN.md#json-line-protocol has stopped being true.
 
 REST_TAB=$(printf '%s' "${NOICON1#*$US}" | tr "$US" "$TAB")
 K=""; I=""; NM=""; M=""; D=""; S=""
@@ -280,7 +280,7 @@ SHARED${US}com.example.updater" \
 "$P_MANIFEST" \
 "a manifest emits FILE/ORPHAN/L/SKIP/SHARED in the documented layout"
 
-# parse_orphan_stream (cdm:586) splits the whole line with IFS=US, type included.
+# parse_orphan_stream() splits the whole line with IFS=US, type included.
 # A location without "strip" is the real orphans.json's common case: the empty
 # field is last, so nothing shifts to give it away — $b simply has to be empty
 # rather than absent.
@@ -324,8 +324,8 @@ assert_eq "ERR${US}could not read file" "$(parse_json_file "$HOME/definitely-not
 # The point of this loop: nothing else in the repo catches a syntax error in a
 # rules edit. `bash -n cdm` does not read JSON, and the rules are fetched from
 # raw main at RUNTIME — a broken one is live for every piped user the moment it
-# merges, before any release gate could have seen it. parse_pattern_stream turns
-# an ERR into a warning and skips the file (cdm:560), so a stray comma does not
+# merges, before any release gate could have seen it. parse_pattern_stream()
+# turns an ERR into a warning and skips the file, so a stray comma does not
 # crash cdm; it silently stops cleaning a whole category. This loop is what
 # makes that a test failure instead.
 
