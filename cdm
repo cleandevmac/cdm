@@ -634,8 +634,10 @@ flush_project_category() {
     local disp; disp=$(shorten_left "$rel" 36)
     # "what's inside": the full list of unique item names, joined — the menu row
     # clips it to whatever width the terminal has, so wide terminals show more.
+    # LC_ALL=C: these are real filenames, and `sort -u` under a collating locale
+    # discards names it considers equal. see docs/DESIGN.md#sort-u-collation
     local summary
-    summary=$(printf '%s\n' "$names" | grep -v '^$' | sort -u | awk '
+    summary=$(printf '%s\n' "$names" | grep -v '^$' | LC_ALL=C sort -u | awk '
         { s = s (NR > 1 ? ", " : "") $0 } END { print s }')
     add_category "📁" "$disp" \
         "Project junk in ${rel}: ${summary}. Regenerable build/dependency dirs are deleted; other git-ignored items (e.g. local .env/config) go to the Trash (recoverable)." \
@@ -666,8 +668,10 @@ ${PROJ_DIRS[$i]}
 EOF
         i=$((i + 1))
     done
+    # LC_ALL=C: a name dropped here is a directory never scanned.
+    # see docs/DESIGN.md#sort-u-collation
     local uniq_names
-    uniq_names=$(printf '%s\n' "${KN[@]+"${KN[@]}"}" | grep -v '^$' | sort -u)
+    uniq_names=$(printf '%s\n' "${KN[@]+"${KN[@]}"}" | grep -v '^$' | LC_ALL=C sort -u)
 
     # One find pass per root captures BOTH repo roots and regenerable target dirs
     # while pruning heavy trees. Only a real .git directory counts as a project root.
@@ -886,7 +890,10 @@ build_installed_set() {
         done
     ) > "$SCAN_DIR/inst_scan" 2>/dev/null &
     wait
-    cat "$SCAN_DIR/inst_lsr" "$SCAN_DIR/inst_scan" 2>/dev/null | grep -v '^$' | sort -u > "$INSTALLED"
+    # LC_ALL=C: Info.plist ids are arbitrary text, and this list is what stands
+    # between a live app's data and the Trash. see docs/DESIGN.md#sort-u-collation
+    cat "$SCAN_DIR/inst_lsr" "$SCAN_DIR/inst_scan" 2>/dev/null \
+        | grep -v '^$' | LC_ALL=C sort -u > "$INSTALLED"
 }
 
 bid_is_kept() {
@@ -945,8 +952,10 @@ register_orphans() {
         done
     done
     [ -s "$raw" ] || return 0
+    # LC_ALL=C: a bid dropped here loses its whole orphan group.
+    # see docs/DESIGN.md#sort-u-collation
     local bid
-    for bid in $(cut -f1 "$raw" | sort -u); do
+    for bid in $(cut -f1 "$raw" | LC_ALL=C sort -u); do
         local paths="" rb rp
         while IFS=$'\t' read -r rb rp; do
             [ "$rb" = "$bid" ] && paths="${paths:+$paths

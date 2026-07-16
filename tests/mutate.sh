@@ -240,6 +240,28 @@ check_mutation 'a bash-4 associative array creeps in' test_portability.sh \
 check_mutation 'the frame is printf-ed as a format string' test_portability.sh \
     "s|printf '%s' \"\$buf\"|printf \"\$buf\"|"
 
+# ---- sort -u collation ------------------------------------------------------
+#
+# One per site: drop the LC_ALL=C pin and leave -u comparing by the user's
+# collation. Only the first is caught by behaviour (flush_project_category takes
+# its names as an argument); the other three need a real filesystem or
+# lsregister to reach, so the static guard in test_sort_locale.sh is what holds
+# them. That is a weaker grip than a behavioural assertion and worth naming: it
+# proves the pin is written, not that it works. The first mutation is what
+# proves the pin does anything at all.
+
+check_mutation 'project summary sort -u unpinned' test_sort_locale.sh \
+    's@| LC_ALL=C sort -u | awk@| sort -u | awk@'
+
+check_mutation 'find -name list sort -u unpinned' test_sort_locale.sh \
+    's@| LC_ALL=C sort -u)@| sort -u)@'
+
+check_mutation 'installed bundle-id sort -u unpinned' test_sort_locale.sh \
+    's@| LC_ALL=C sort -u > "\$INSTALLED"@| sort -u > "$INSTALLED"@'
+
+check_mutation 'orphan bid sort -u unpinned' test_sort_locale.sh \
+    's@cut -f1 "\$raw" | LC_ALL=C sort -u@cut -f1 "$raw" | sort -u@'
+
 echo
 printf 'mutations: %d, survived (holes in the tests): %d\n' "$total" "$survived"
 if [ "$survived" -gt 0 ]; then
