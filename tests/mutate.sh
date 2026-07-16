@@ -107,6 +107,28 @@ check_mutation 'human_kb MB threshold 1024 -> 1000' test_helpers.sh \
 check_mutation 'human_kb GB threshold off by one' test_helpers.sh \
     's|\[ "\$kb" -ge 1048576 \]|[ "$kb" -gt 1048576 ]|'
 
+# The comma-decimal bug, which shipped: awk's %f writes the separator LC_NUMERIC
+# names, so unpinned this renders "1,00 GB" under any European locale. It hid
+# because the suite only ever ran under the developer's locale — the same reason
+# the is_ascii range bug below hid — so test_helpers.sh now pins its own.
+check_mutation 'human_kb GB loses its LC_ALL=C (comma separator)' test_helpers.sh \
+    's|-ge 1048576 \]; then LC_ALL=C awk|-ge 1048576 ]; then awk|'
+
+# Weakening the pin to LC_NUMERIC=C, which is the fix a reader is most likely to
+# reach for and is WRONG: LC_ALL outranks LC_NUMERIC in the process that reads
+# it, so this still prints a comma for anyone exporting LC_ALL=de_DE.UTF-8 —
+# which is exactly what in_locale sets. (docs/DESIGN.md#numeric-format)
+check_mutation 'human_kb GB pins LC_NUMERIC, which LC_ALL outranks' test_helpers.sh \
+    's|-ge 1048576 \]; then LC_ALL=C awk|-ge 1048576 ]; then LC_NUMERIC=C awk|'
+
+# The MB branch's LC_ALL=C is deliberately NOT mutated here: it is an equivalent
+# mutant. That branch formats with %.0f, which keeps no fraction and so emits no
+# separator at all under any locale — no input distinguishes the mutant, and no
+# assertion could catch it. It is pinned in cdm anyway because it sits one edit
+# ('%.0f' -> '%.1f') away from being the same bug, and the MB rows in
+# test_helpers.sh are what would notice that edit. Verified to survive against
+# the real script rather than assumed.
+
 check_mutation 'human_to_kb: kB treated as binary' test_helpers.sh \
     's|kB\|KB\|kb) mult=1000 ;;|kB\|KB\|kb) mult=1024 ;;|'
 

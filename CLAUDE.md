@@ -54,7 +54,8 @@ is_safe_target "$HOME/Documents" && echo REACHABLE || echo "correctly refused"
 ```
 
 `tests/lib.sh` is that same `CDM_LIB` hook with a sandboxed `$HOME` wrapped around it, plus three
-assertions (`assert_eq`, `assert_ok`, `assert_fail`). No framework, for the same reason there are no
+assertions (`assert_eq`, `assert_ok`, `assert_fail`) and `in_locale`, which runs one command under a
+locale the suite names rather than the developer's. No framework, for the same reason there are no
 dependencies: a suite needing `bats` installed would be testing a machine no user has. Each file
 runs under `/bin/bash` — 3.2, the floor — in its own process.
 
@@ -214,8 +215,31 @@ Two lessons, both general:
   can see that*. `tests/mutate.sh` is what surfaced it: a mutation inside the dead
   branch survived, because a mutation in unreachable code cannot fail a test. Treat a surviving
   mutation as a claim about reachability, not only about coverage. `tests/test_text_width.sh` now
-  pins the locale itself (`in_locale`) rather than trusting the developer's — under `LANG=C.UTF-8`
-  the suite passed and CI, on `en_US.UTF-8`, did not.
+  pins the locale itself (`in_locale`, in `tests/lib.sh`) rather than trusting the developer's —
+  under `LANG=C.UTF-8` the suite passed and CI, on `en_US.UTF-8`, did not.
+
+### A locale-sensitive test must pin its own locale — and CI sweeps the rest
+
+Two of these have now shipped: the collation range above, and `human_kb` formatting `1,00 GB`
+through awk's `%f` under a European locale (see `docs/DESIGN.md#numeric-format`). The second is the
+instructive one, because the suite **already caught it** — `LANG=de_DE.UTF-8 ./tests/test_helpers.sh`
+failed on unmodified `main` — and nobody ever ran it that way. A suite is worth one locale's coverage
+unless it says otherwise, however many assertions it has.
+
+Both halves of the answer are load-bearing, and they cover different things:
+
+- Tests that know they are locale-sensitive pin their own with `in_locale` (`tests/lib.sh`),
+  plus a **premise assertion** that the hostile locale really is hostile — bash and awk fall back to
+  C *silently* on an unknown locale, so `de_DE.UTF-8` failing to resolve would make every row pass
+  under C and prove nothing. This is the deterministic, mutation-backed half.
+- `.github/workflows/tests.yml` runs the whole suite under five locales anyway, because pinning only
+  ever covers hazards someone anticipated. At ~4s a pass it is the cheapest coverage in the file.
+
+Read `in_locale`'s comment before using it. It has to **export** (a forked `awk`/`sort` reads the
+locale from its environment, and a bare assignment is not in it), by **assignment inside `( )`** (the
+`LC_ALL=x func` prefix form does not re-init the locale in bash 3.2). Get either wrong and the test
+passes against the *unfixed* code — which is the exact failure being defended against, so verify a
+new locale test actually fails before trusting it.
 
 ### The menu is a fixed-height frame — mind the last newline
 

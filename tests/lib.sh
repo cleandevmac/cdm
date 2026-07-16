@@ -116,6 +116,32 @@ assert_fail() {
     fi
 }
 
+# in_locale <locale> <cmd...> — run <cmd> under a locale this suite names, rather
+# than whichever one the developer's shell happens to export. Two locale-sensitive
+# bugs have shipped in cdm (a collation-resolved bracket range in is_ascii, a
+# comma decimal separator out of human_kb's awk), and both hid the same way: the
+# suite only ever ran under one locale. An assertion about locale-dependent
+# behavior has to pin its own.
+#
+# Three details, each of which silently makes this pass for free if you get it
+# wrong — and "passes for free" is the whole failure mode being defended against:
+#
+#   * EXPORT, not a bare assignment. A bare `LC_ALL=de_DE.UTF-8` re-runs setlocale
+#     in THIS shell, which is enough for a bash builtin or a pattern match, but it
+#     is not in the environment — so a command that forks (awk, sort, du) never
+#     sees it and answers in the developer's locale. Against unfixed code that
+#     reads as a pass.
+#   * ASSIGNMENT, not the `LC_ALL=x cmd` prefix form. bash 3.2 re-runs setlocale
+#     when the variable is assigned, but not for the temporary environment of a
+#     FUNCTION call, so the prefix form leaves this shell's own locale untouched —
+#     which is what a caller testing bash-internal behavior (is_ascii) needs.
+#   * the ( ) subshell, so the export cannot leak into every later assertion in
+#     the file: assert_ok runs its command in the CURRENT shell.
+#
+# The pair is what makes one helper serve both callers: the export reaches forked
+# children, and assigning it (rather than prefixing) still re-inits this shell.
+in_locale() { ( export LC_ALL="$1"; shift; "$@" ); }
+
 # Every test file ends with this; its exit status is what run.sh counts.
 test_summary() {
     if [ "$T_FAIL" -gt 0 ]; then

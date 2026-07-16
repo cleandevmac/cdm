@@ -13,7 +13,10 @@
 #     tool shows "1024 MB" and "1.00 GB" for two sizes one KB apart. An
 #     assertion phrased as "about a gigabyte" would pass against either format
 #     AND against a swapped threshold, so every expectation here is the exact
-#     byte string a user reads off the menu.
+#     byte string a user reads off the menu. Formatting in awk also means the
+#     decimal SEPARATOR is the locale's business unless cdm takes it away, which
+#     is its own section below — and the reason these rows run under a locale
+#     this file names rather than the one the developer happens to have.
 #   * human_to_kb is decimal where Docker is decimal (kB = 1000) and binary
 #     where Docker is binary (KiB = 1024). That is deliberate, and the two are
 #     only 2.4% apart — far too close for a wrong multiplier to ever look wrong
@@ -73,6 +76,54 @@ assert_eq "1.50 GB"  "$(human_kb 1572864)"  "human_kb keeps 2 decimals in GB"
 # Missing/empty argument defaults to 0 rather than erroring under `set -u`.
 assert_eq "0 KB"     "$(human_kb)"          "human_kb with no argument"
 assert_eq "0 KB"     "$(human_kb "")"       "human_kb with an empty argument"
+
+# ---- human_kb(): the decimal separator is cdm's, not the locale's -----------
+#
+# awk's %f writes whichever decimal separator LC_NUMERIC names, so before
+# human_kb pinned LC_ALL=C the GB branch rendered "1,00 GB" for anyone whose
+# shell exported a European locale — the one localized glyph in an English UI,
+# and in the receipt written to clean.log. (docs/DESIGN.md#numeric-format)
+#
+# Premise check first, because there are two silent ways this section could pass
+# while proving nothing:
+#
+#   * de_DE.UTF-8 might not resolve. bash and awk fall back to C SILENTLY on an
+#     unknown locale — no diagnostic, exit 0 — and C's separator is the very
+#     period being asserted, so every row below would pass under C.
+#   * in_locale might not REACH awk. awk is a forked child and reads the locale
+#     from its environment, so the variable has to be exported, not merely
+#     assigned. A non-exporting helper leaves awk answering in the developer's
+#     locale, which against the unfixed code reads exactly like a pass.
+#
+# So assert that a bare awk — no cdm anywhere in it — really does print a comma
+# here. This is the row that proves the hostile locale is actually hostile and
+# that in_locale actually delivers it. If it fails, everything below has lost its
+# teeth: find out why rather than deleting it.
+awk_sep() { awk 'BEGIN{printf "%.2f", 1.5}'; }
+assert_eq "1,50" "$(in_locale de_DE.UTF-8 awk_sep)" \
+    "premise: under de_DE.UTF-8 a bare awk really does print a comma"
+assert_eq "1.50" "$(in_locale C awk_sep)" \
+    "premise: under C that same awk prints a period"
+
+# The fix, under every arrival that matters: two comma locales, and the period
+# locales that must not change. in_locale sets LC_ALL deliberately — it is the
+# strongest form, and the reason the fix in cdm says LC_ALL=C rather than
+# LC_NUMERIC=C: LC_ALL outranks LC_NUMERIC in the process that reads it, so a
+# `LC_NUMERIC=C awk` would still print a comma for exactly these callers.
+#
+# The MB and KB rows are here to pin that the OTHER two branches stay
+# separator-free: %.0f keeps no fraction and the KB branch is a plain echo, so
+# neither can grow a comma without someone changing a format string.
+for loc in de_DE.UTF-8 fr_FR.UTF-8 en_US.UTF-8 C.UTF-8 C; do
+    assert_eq "1.00 GB" "$(in_locale "$loc" human_kb 1048576)" \
+        "human_kb 1048576 is '1.00 GB' under $loc"
+    assert_eq "1.50 GB" "$(in_locale "$loc" human_kb 1572864)" \
+        "human_kb 1572864 is '1.50 GB' under $loc"
+    assert_eq "1024 MB" "$(in_locale "$loc" human_kb 1048575)" \
+        "human_kb 1048575 is '1024 MB' under $loc"
+    assert_eq "512 KB"  "$(in_locale "$loc" human_kb 512)" \
+        "human_kb 512 is '512 KB' under $loc"
+done
 
 # ---- human_to_kb(): Docker-style sizes -------------------------------------
 #
