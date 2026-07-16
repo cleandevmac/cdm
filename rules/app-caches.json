@@ -1,6 +1,6 @@
 {
   "title": "Browser & application caches",
-  "_comment": "Application-level caches. The Electron/Chromium entry uses * globs to match the Cache/GPUCache/etc. folders that Electron apps (VS Code, Claude, Slack, Discord, ...) create under Application Support. These hold only re-fetchable data. Chromium *browsers* keep their per-profile caches one level deeper (Google/Chrome/<profile>/...), so they need their own entry — the depth-2 glob above does not reach them. method: emptytrash empties ~/.Trash (irreversible). Note: only 'Service Worker/CacheStorage' is listed, never 'Service Worker/ScriptCache' — the latter holds MV3 extension bytecode and removing it breaks extension service workers mid-session.",
+  "_comment": "Application-level caches. The Electron/Chromium entry uses * globs to match the Cache/GPUCache/etc. folders that Electron apps (VS Code, Claude, Slack, Discord, ...) create under Application Support. These hold only re-fetchable data. Chromium *browsers* keep their per-profile caches one level deeper (Google/Chrome/<profile>/...), so they need their own entry — the depth-2 glob above does not reach them. method: emptytrash empties ~/.Trash (irreversible). Note: only 'Service Worker/CacheStorage' is listed, never 'Service Worker/ScriptCache' — the latter holds MV3 extension bytecode and removing it breaks extension service workers mid-session. 'procs' lists the macOS process names of the apps that rewrite a category's caches while running; cdm warns before deleting under a running app. Names must match `pgrep -x` exactly (the CFBundleExecutable, e.g. 'Code' for VS Code) — an unknown name simply never matches, so a wrong entry costs a missing warning, never a false one.",
   "categories": [
     {
       "icon": "⚡",
@@ -8,6 +8,10 @@
       "method": "rm",
       "default": true,
       "desc": "Disk/GPU/code caches inside Electron apps (VS Code, Claude, Slack, ...) — rebuilt on launch.",
+      "procs": [
+        "Code", "Claude", "Slack", "Discord", "Notion",
+        "Figma", "Obsidian", "Postman", "Spotify"
+      ],
       "paths": [
         "~/Library/Application Support/*/Cache",
         "~/Library/Application Support/*/Code Cache",
@@ -36,6 +40,10 @@
       "method": "rm",
       "default": true,
       "desc": "HTTP/disk caches for Chrome, Brave, Edge, Vivaldi, Arc, Firefox — safe to clear.",
+      "procs": [
+        "Google Chrome", "Chromium", "Brave Browser", "Microsoft Edge",
+        "Vivaldi", "Arc", "Dia", "Opera", "firefox", "Safari", "Orion", "zen"
+      ],
       "paths": [
         "~/Library/Caches/Google",
         "~/Library/Caches/com.google.Chrome",
@@ -61,6 +69,10 @@
       "method": "rm",
       "default": true,
       "desc": "Per-profile code/GPU/shader caches for Chrome, Brave, Arc, Vivaldi & Edge — rebuilt on launch. Quit the browser first so it does not rewrite them mid-clean.",
+      "procs": [
+        "Google Chrome", "Brave Browser", "Microsoft Edge",
+        "Vivaldi", "Arc", "firefox"
+      ],
       "paths": [
         "~/Library/Application Support/Google/Chrome/*/Code Cache",
         "~/Library/Application Support/Google/Chrome/*/GPUCache",
@@ -126,6 +138,7 @@
       "method": "rm",
       "default": false,
       "desc": "Chrome's downloaded on-device AI / optimization-guide models — regenerable, but several GB to re-download if you use those features.",
+      "procs": ["Google Chrome"],
       "paths": [
         "~/Library/Application Support/Google/Chrome/OptGuideOnDeviceModel",
         "~/Library/Application Support/Google/Chrome/OptGuideOnDeviceClassifierModel",

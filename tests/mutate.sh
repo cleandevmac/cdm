@@ -314,6 +314,46 @@ check_mutation 'installed bundle-id sort -u unpinned' test_sort_locale.sh \
 check_mutation 'orphan bid sort -u unpinned' test_sort_locale.sh \
     's@cut -f1 "\$raw" | LC_ALL=C sort -u@cut -f1 "$raw" | sort -u@'
 
+# ---- the running-app check (docs/DESIGN.md#running-app-check) ---------------
+#
+# The two CAT_PROCS-alignment mutations are the reason this section exists. A
+# parallel array that is not copied by prune_zero/sort_by_size does not fail
+# loudly, it just slides one row out of step — cdm would warn about Chrome
+# because Slack is running, and the menu would look completely normal.
+
+check_mutation 'sort_by_size drops CAT_PROCS (procs slide off their row)' test_running_apps.sh \
+    's|        PROCS\[\$j\]="\${CAT_PROCS\[\$i\]}"||'
+
+check_mutation 'sort_by_size never restores CAT_PROCS' test_running_apps.sh \
+    's|        CAT_PROCS\[\$i\]="\${PROCS\[\$i\]}"||'
+
+check_mutation 'prune_zero drops CAT_PROCS (procs slide off their row)' test_running_apps.sh \
+    's|                CAT_PROCS\[\$w\]="\${CAT_PROCS\[\$r\]}"||'
+
+check_mutation 'JXA stops emitting PROC records (rules procs never load)' test_running_apps.sh \
+    "s@(c.procs   || \[\]).forEach(function(p){ out.push(tab('PROC', p)); });@@"
+
+check_mutation 'parser ignores PROC records' test_running_apps.sh \
+    's|            PROC) cprocs="\${cprocs:+\$cprocs|            ZZPROC) cprocs="${cprocs:+$cprocs|'
+
+check_mutation 'cprocs not reset per category (procs leak to the next rule)' test_running_apps.sh \
+    's|have=1; cpaths=""; cdirs=""; cengines=""; cprocs="" ;;|have=1; cpaths=""; cdirs=""; cengines="" ;;|'
+
+check_mutation 'register_paths drops procs on the way to add_category' test_running_apps.sh \
+    's|"\$default" "\$found" "" "\$procs"|"$default" "$found" ""|'
+
+check_mutation 'de-dup dropped (one app named once per category)' test_running_apps.sh \
+    's@            seen="${seen}|$name|"@@'
+
+# Addressed to the function: the same CAT_SEL guard line appears at four sites,
+# and a global rewrite would mutate run_cleanup's deletion loop too — a much
+# louder bug than the one under test here.
+check_mutation 'unselected categories are probed too' test_running_apps.sh \
+    '/^running_selected_apps()/,/^}/ s@\[ "${CAT_SEL\[$i\]}" = "1" \] || continue@[ "${CAT_SEL[$i]}" != "ZZ" ] || continue@'
+
+check_mutation 'pgrep loses -x (Google Chrome Helper would match)' test_running_apps.sh \
+    's|pgrep -xq "\$name"|pgrep -q "$name"|'
+
 echo
 printf 'mutations: %d, survived (holes in the tests): %d\n' "$total" "$survived"
 if [ "$survived" -gt 0 ]; then

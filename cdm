@@ -322,6 +322,7 @@ function run(argv) {
     (c.paths   || []).forEach(function(p){ out.push(tab('P', p)); });
     (c.dirs    || []).forEach(function(d){ out.push(tab('D', d)); });
     (c.engines || []).forEach(function(e){ out.push(tab('E', e)); });
+    (c.procs   || []).forEach(function(p){ out.push(tab('PROC', p)); });
   });
   (o.patternFiles    || []).forEach(function(f){ out.push(tab('FILE', f)); });
   if (o.orphanConfig) out.push(tab('ORPHAN', o.orphanConfig));
@@ -342,7 +343,10 @@ CAT_DEFAULT=(); CAT_PATHS=(); CAT_KB=(); CAT_SEL=(); N=0
 # per-path methods aligned line-for-line with CAT_PATHS (a repo mixes rm'd
 # build dirs with trashed git-ignored config). Empty for every other category.
 # CAT_SUMMARY: a short "what's inside" blurb shown after the size in the menu.
-CAT_PMETHOD=(); CAT_SUMMARY=()
+# CAT_PROCS: newline-separated process names from the rule's "procs" list — the
+# apps that rewrite this category's caches while running.
+# see docs/DESIGN.md#running-app-check
+CAT_PMETHOD=(); CAT_SUMMARY=(); CAT_PROCS=()
 
 # Project-scan config + pending project/gitignore categories (filled by JSON).
 SCAN_ROOTS=(); SCAN_PRUNE=(); SCAN_DEPTH=8; SCAN_MAXREPOS=400
@@ -354,17 +358,17 @@ CONT_ICON=(); CONT_NAME=(); CONT_METHOD=(); CONT_DEFAULT=(); CONT_DESC=(); CONT_
 # Orphan-detection config.
 ORPH_LOC_PATH=(); ORPH_LOC_STRIP=(); SKIP_PREFIXES=(); SHARED_COMPONENTS=()
 
-add_category() { # icon name desc method default paths [pmethods]
+add_category() { # icon name desc method default paths [pmethods] [procs]
     CAT_ICON[$N]="$1"; CAT_NAME[$N]="$2"; CAT_DESC[$N]="$3"
     CAT_METHOD[$N]="$4"; CAT_DEFAULT[$N]="$5"; CAT_PATHS[$N]="$6"
-    CAT_PMETHOD[$N]="${7:-}"; CAT_SUMMARY[$N]=""
+    CAT_PMETHOD[$N]="${7:-}"; CAT_SUMMARY[$N]=""; CAT_PROCS[$N]="${8:-}"
     CAT_SEL[$N]="$5"; CAT_KB[$N]=0; N=$((N + 1))
 }
 
 # register_paths — expand a newline-separated path list (~ and * globs) into the
 # concrete, existing, non-empty, de-duplicated paths, then add the category.
 register_paths() {
-    local icon="$1" name="$2" method="$3" default="$4" desc="$5" pathlist="$6"
+    local icon="$1" name="$2" method="$3" default="$4" desc="$5" pathlist="$6" procs="${7:-}"
     local found="" pat m
     while IFS= read -r pat; do
         [ -n "$pat" ] || continue
@@ -391,7 +395,7 @@ $m
     done <<EOF
 $pathlist
 EOF
-    [ -n "$found" ] && add_category "$icon" "$name" "$desc" "$method" "$default" "$found"
+    [ -n "$found" ] && add_category "$icon" "$name" "$desc" "$method" "$default" "$found" "" "$procs"
 }
 
 # ---------------------------------------------------------------------------
@@ -481,7 +485,7 @@ load_patterns() {
     # Reset everything this rebuilds.
     CAT_ICON=(); CAT_NAME=(); CAT_DESC=(); CAT_METHOD=()
     CAT_DEFAULT=(); CAT_PATHS=(); CAT_KB=(); CAT_SEL=(); N=0
-    CAT_PMETHOD=(); CAT_SUMMARY=()
+    CAT_PMETHOD=(); CAT_SUMMARY=(); CAT_PROCS=()
     SCAN_ROOTS=(); SCAN_PRUNE=(); SCAN_DEPTH=8; SCAN_MAXREPOS=400
     PROJ_ICON=(); PROJ_NAME=(); PROJ_METHOD=(); PROJ_DEFAULT=(); PROJ_DESC=(); PROJ_DIRS=(); PROJ_N=0
     GI_ON=0; GI_ICON=""; GI_NAME=""; GI_METHOD="trash"; GI_DEFAULT=0; GI_DESC=""
@@ -521,7 +525,7 @@ flush_pattern_category() {
             CONT_METHOD[$CONT_N]="$cmethod"; CONT_DEFAULT[$CONT_N]="$cdefault"
             CONT_DESC[$CONT_N]="$cdesc"; CONT_ENGINES[$CONT_N]="$cengines"; CONT_N=$((CONT_N + 1)) ;;
         *)
-            register_paths "$cicon" "$cname" "$cmethod" "$cdefault" "$cdesc" "$cpaths" ;;
+            register_paths "$cicon" "$cname" "$cmethod" "$cdefault" "$cdesc" "$cpaths" "$cprocs" ;;
     esac
 }
 
@@ -531,7 +535,7 @@ flush_pattern_category() {
 # split) because the C header line carries 6 tab-separated fields of its own.
 parse_pattern_stream() {
     local file="$1"
-    local ckind="" cicon="" cname="" cmethod="" cdefault="" cdesc="" cpaths="" cdirs="" cengines="" have=0
+    local ckind="" cicon="" cname="" cmethod="" cdefault="" cdesc="" cpaths="" cdirs="" cengines="" cprocs="" have=0
     local line typ rest us=$'\x1f'
     while IFS= read -r line; do
         typ="${line%%$us*}"       # text before the first US separator
@@ -547,12 +551,14 @@ parse_pattern_stream() {
                 IFS=$us read -r ckind cicon cname cmethod cdefault cdesc <<EOF
 $rest
 EOF
-                have=1; cpaths=""; cdirs=""; cengines="" ;;
+                have=1; cpaths=""; cdirs=""; cengines=""; cprocs="" ;;
             P) cpaths="${cpaths:+$cpaths
 }$rest" ;;
             D) cdirs="${cdirs:+$cdirs
 }$rest" ;;
             E) cengines="${cengines:+$cengines
+}$rest" ;;
+            PROC) cprocs="${cprocs:+$cprocs
 }$rest" ;;
         esac
     done < <(parse_json_file "$file")
@@ -1034,6 +1040,7 @@ prune_zero() {
                 CAT_DEFAULT[$w]="${CAT_DEFAULT[$r]}"; CAT_PATHS[$w]="${CAT_PATHS[$r]}"
                 CAT_KB[$w]="${CAT_KB[$r]}";         CAT_SEL[$w]="${CAT_SEL[$r]}"
                 CAT_PMETHOD[$w]="${CAT_PMETHOD[$r]}"; CAT_SUMMARY[$w]="${CAT_SUMMARY[$r]}"
+                CAT_PROCS[$w]="${CAT_PROCS[$r]}"
             fi
             w=$((w + 1))
         fi
@@ -1050,13 +1057,14 @@ sort_by_size() {
     local order i j=0
     order=$(for i in $(cat_indices); do printf '%s\t%s\n' "${CAT_KB[$i]}" "$i"; done \
             | sort -rn -k1,1 -s | cut -f2)
-    local ICON=() NAME=() DESC=() METHOD=() DEFAULT=() PATHS=() KB=() SEL=() PMETHOD=() SUMMARY=()
+    local ICON=() NAME=() DESC=() METHOD=() DEFAULT=() PATHS=() KB=() SEL=() PMETHOD=() SUMMARY=() PROCS=()
     for i in $order; do
         ICON[$j]="${CAT_ICON[$i]}";       NAME[$j]="${CAT_NAME[$i]}"
         DESC[$j]="${CAT_DESC[$i]}";       METHOD[$j]="${CAT_METHOD[$i]}"
         DEFAULT[$j]="${CAT_DEFAULT[$i]}"; PATHS[$j]="${CAT_PATHS[$i]}"
         KB[$j]="${CAT_KB[$i]}";           SEL[$j]="${CAT_SEL[$i]}"
         PMETHOD[$j]="${CAT_PMETHOD[$i]}"; SUMMARY[$j]="${CAT_SUMMARY[$i]}"
+        PROCS[$j]="${CAT_PROCS[$i]}"
         j=$((j + 1))
     done
     for i in $(cat_indices); do
@@ -1065,6 +1073,7 @@ sort_by_size() {
         CAT_DEFAULT[$i]="${DEFAULT[$i]}"; CAT_PATHS[$i]="${PATHS[$i]}"
         CAT_KB[$i]="${KB[$i]}";           CAT_SEL[$i]="${SEL[$i]}"
         CAT_PMETHOD[$i]="${PMETHOD[$i]}"; CAT_SUMMARY[$i]="${SUMMARY[$i]}"
+        CAT_PROCS[$i]="${PROCS[$i]}"
     done
 }
 
@@ -1390,6 +1399,30 @@ EOF
 toggle_all() { local t="$1" i; for i in $(cat_indices); do CAT_SEL[$i]="$t"; done; }
 select_safe() { local i; for i in $(cat_indices); do CAT_SEL[$i]="${CAT_DEFAULT[$i]}"; done; }
 
+# running_selected_apps — echo a comma-separated list of the apps that are both
+# running and own a cache the user selected, so the confirm can name them. The
+# names come from each rule's "procs"; the script knows no app names of its own.
+# `pgrep -x` matches the process name exactly, so "Google Chrome" does not also
+# match its "Google Chrome Helper" children.
+# see docs/DESIGN.md#running-app-check
+running_selected_apps() {
+    local i name running="" seen=""
+    for i in $(cat_indices); do
+        [ "${CAT_SEL[$i]}" = "1" ] || continue
+        [ -n "${CAT_PROCS[$i]}" ] || continue
+        while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            # Two selected categories can name the same app; probe it once.
+            case "$seen" in *"|$name|"*) continue ;; esac
+            seen="${seen}|$name|"
+            if pgrep -xq "$name" 2>/dev/null; then running="${running:+$running, }$name"; fi
+        done <<EOF
+${CAT_PROCS[$i]}
+EOF
+    done
+    printf '%s' "$running"
+}
+
 # ---------------------------------------------------------------------------
 # Execution
 # ---------------------------------------------------------------------------
@@ -1500,6 +1533,18 @@ run_cleanup() {
     [ "$NON_INTERACTIVE" -eq 0 ] && printf '\033[H\033[2J'
     print_plan
     if [ "$(selected_count)" -eq 0 ]; then echo "${YELLOW}Nothing selected.${NC}"; return 1; fi
+
+    # Name any running app that would rewrite a selected cache mid-clean. This
+    # sits above the confirm rather than below it so it informs that one answer
+    # instead of arriving after it, and it prints on a dry run too — the preview
+    # is where "quit Chrome first" is still actionable.
+    local running
+    running=$(running_selected_apps)
+    if [ -n "$running" ]; then
+        echo
+        echo "${YELLOW}⚠  Still running: ${running}${NC}"
+        echo "${DIM}Quit first so they don't rewrite the caches you're about to delete, then reopen after the clean.${NC}"
+    fi
 
     # --dry-run stops here, before any confirmation or deletion. Every caller
     # funnels through run_cleanup (the interactive menu and the non-interactive

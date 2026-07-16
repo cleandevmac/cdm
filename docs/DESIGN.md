@@ -250,10 +250,44 @@ by US (\x1f, "\037"), NOT tab: US is not an IFS-whitespace character, so bash
 Records are newline-separated. Field layout per record type:
   SR<US>root | SPRUNE<US>name | SDEPTH<US>n | SREPOS<US>n           (scan config)
   C<US>kind<US>icon<US>name<US>method<US>default<US>desc            (category)
-  P<US>path | D<US>dirname                                         (paths / dirs)
+  P<US>path | D<US>dirname | E<US>engine                           (paths / dirs / engines)
+  PROC<US>process-name                                             (running-app check)
   L<US>path<US>strip | SKIP<US>prefix | SHARED<US>id                (orphan config)
   FILE<US>name | ORPHAN<US>name | ERR<US>message
 ---------------------------------------------------------------------------
+
+<a id="running-app-check"></a>
+## The running-app check reads rules, not a table in the script
+
+Deleting a cache under the app that owns it accomplishes nothing: Chrome
+rewrites its Code Cache within seconds of the `rm`, so the space comes back
+and the user concludes cdm did not work. `running_selected_apps` names the
+offenders before the confirm so the user can quit them first.
+
+The knowledge of *which* app owns *which* cache lives in the rules, as a
+`procs` list on the category, and reaches the script as a `CAT_PROCS` entry
+aligned with `CAT_PATHS`. It is deliberately not a `case` over category names
+in `cdm`, which is what the first draft of this feature did. That version was
+wrong twice over:
+
+- It reintroduced the thing the rules exist to prevent. Adding a browser meant
+  editing the script, against the promise that cleanup targets are a JSON edit.
+- It coupled code to data through the category's display `name`. Renaming a
+  category in JSON — a rules-only, apparently cosmetic edit — silently disabled
+  the warning. No error, no failing test, no output: the safety check simply
+  stopped existing. Nothing in the tool could notice, because a `case` that
+  matches nothing is indistinguishable from a category with no browsers.
+
+The drift was not hypothetical; it shipped in the draft. `Browser caches`
+already listed cache paths for Chromium, Dia and Orion, and the hardcoded
+table in the script knew about none of them.
+
+`pgrep -x` matches the process name (`p_comm`) exactly, which is what makes
+this safe to drive from data. "Google Chrome" does not match the several
+"Google Chrome Helper" processes that are always alive alongside it, and an
+entry naming an app that does not exist simply never matches. So a bad `procs`
+entry costs a *missing* warning, never a false one — the failure is always
+toward silence, never toward nagging.
 
 <a id="glob-expansion"></a>
 ## Glob expansion in register_paths

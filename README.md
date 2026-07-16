@@ -97,6 +97,8 @@ Targets live in JSON under `rules/`, not in code. Add or remove paths by editing
 
 Each category is an object with `icon`, `name`, `desc`, `paths`, `default` (pre-selected or not) and `method` (`rm` to delete, `trash` to move to the Trash). Point `cdm` at your own set with `--patterns <dir-or-url>`.
 
+A category may also carry `procs` — the process names of apps that would rewrite those caches while running (`"procs": ["Google Chrome", "Code"]`). `cdm` names any that are open before asking you to confirm, since clearing a cache under its own app just hands the space straight back. Names must match `pgrep -x` exactly.
+
 ## Options
 
 | Option | Effect |

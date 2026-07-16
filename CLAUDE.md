@@ -97,12 +97,18 @@ expected, not a bug: bash exits without draining the pipe and curl takes SIGPIPE
 contributes categories. Adding or removing cleanup targets should be a JSON edit, **not** a code
 change; the README and landing page both promise this, so preserve it.
 
-A category object is `icon`, `name`, `desc`, `method`, `default`, `paths`:
+A category object is `icon`, `name`, `desc`, `method`, `default`, `paths`, and optionally `procs`:
 
 - `method` — `rm` (permanent; the target regenerates) or `trash` (recoverable). Also `project`
   and `container`, which the script synthesizes rather than reading verbatim.
 - `default` — whether it arrives pre-selected. `s` in the TUI resets to these.
 - `desc` — the *why*, shown next to the row.
+- `procs` — optional; macOS process names of the apps that rewrite this category's caches while
+  running, so `cdm` can say "quit Chrome first" before the confirm rather than deleting a cache the
+  app restores seconds later. Must match `pgrep -x` exactly — the `CFBundleExecutable`, e.g. `Code`
+  for VS Code. An unknown name never matches, so a wrong entry costs a missing warning, never a
+  false one. This is the *only* place app names live; adding a browser is a JSON edit, and
+  deliberately so. See `docs/DESIGN.md#running-app-check`.
 
 Note the on-disk names are `name`/`method`/`default`, not `label`/`disposition`/`safe`. If you are
 writing docs, read a rule file first — this has been documented wrong before.
