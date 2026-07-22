@@ -316,14 +316,49 @@ clean and see what each holds. Junk that isn't inside
 a repo is skipped (it's almost always a tool/language cache the cache rules
 already cover, not one of your projects). Within a project every item keeps its
 own method: known regenerable build/dependency dirs are deleted (they rebuild),
-while any other git-ignored entry (local .env, config, logs) is moved to the
-Trash so it can be recovered.
+while any other git-ignored entry (local config, logs) is moved to the
+Trash so it can be recovered. One shape is never offered at all — `.env*` files
+(see #env-file-exception).
 
 The helpers in this part of the script (classify_method / project_key /
 shorten_left / flush_project_category) are only ever called from scan_projects and
 read its locals through bash dynamic scope — the same pattern parse_pattern_stream and
 flush_pattern_category use.
 ---------------------------------------------------------------------------
+
+<a id="env-file-exception"></a>
+## The .env* exception
+
+The git-ignored pass (`git ls-files --others --ignored`) surfaces exactly the
+files a project deliberately keeps out of version control — and that set almost
+always includes `.env`, `.env.local`, `.env.production` and friends: the secrets
+and machine-local config a checkout can't reproduce. Being git-ignored is what
+makes them cleanup candidates *and* what makes them irreplaceable, and unlike a
+build dir there is nothing to regenerate them from. The gitignore method is
+`trash` precisely because these might be caught, but "recoverable from the Trash"
+is a weak promise for the one file whose loss can break a working tree or leak
+nothing-left-to-recover — so `cdm` doesn't offer `.env*` for deletion at all.
+
+The guard is a single `case "$bn" in .env*) continue ;; esac` in scan_projects'
+git-ignored branch, keyed on the basename. Placement and shape both matter:
+
+  * It lives only in the git-ignored branch. The name-matched branch draws its
+    names from the rules (`node_modules`, `dist`, `target`, ...), none of which
+    start with `.env`, so a guard there would be dead code — an equivalent
+    mutant tests/mutate.sh would rightly refuse.
+  * `.env*` is deliberately broader than `.env`/`.env.*`: it also spares
+    `.envrc` (direnv) and anything else a user prefixed `.env`. The failure mode
+    of over-matching is a missed cleanup, never a wrongful delete — the same
+    fail-safe direction as the `procs` running-app check — so erring wide is the
+    conservative choice.
+
+Boundary worth naming: `git ls-files --directory` collapses a *wholly* ignored
+directory into one `dir/` entry, so a `.env` living inside such a directory is
+not seen as its own entry and isn't matched by basename. That case stays as it
+was — the directory goes to the Trash, recoverable — because widening the guard
+to catch it would mean descending every collapsed ignored dir (dropping
+`--directory` explodes the item count; see #dedup-nesting). The guard covers the
+overwhelmingly common shape: a `.env*` listed as its own git-ignored entry.
 
 <a id="project-key"></a>
 ## project_key

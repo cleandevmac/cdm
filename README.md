@@ -64,6 +64,7 @@ Make sure `~/.local/bin` is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH
 - **Caches are deleted permanently** — they regenerate on the next build.
 - **Orphaned app data and git-ignored files go to the Trash**, so they are recoverable.
 - **Never touched regardless of what the rules say:** `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`, `~/.ssh`, and iCloud Drive. This guard sits below the rule engine — a rule cannot opt out of it.
+- **`.env*` files are never offered for deletion.** The project scan skips them even though they're git-ignored — they hold secrets and local config nothing regenerates.
 - **App sandboxes and Apple/system-owned data are never touched.**
 - The installed-app list is read from **LaunchServices**, so prefPanes, plugins and other non-`.app` bundles aren't mis-flagged as orphaned.
 - `--dry-run` deletes nothing.

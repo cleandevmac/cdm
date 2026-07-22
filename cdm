@@ -669,7 +669,7 @@ flush_project_category() {
         fi
     fi
     add_category "📁" "$disp" \
-        "Project junk in ${rel}: ${summary}. Regenerable build/dependency dirs are deleted; other git-ignored items (e.g. local .env/config) go to the Trash (recoverable)." \
+        "Project junk in ${rel}: ${summary}. Regenerable build/dependency dirs are deleted; other git-ignored items (e.g. local config, logs) go to the Trash (recoverable); .env* files are always left alone." \
         "project" 0 "$paths" "$pmethods"
     CAT_SUMMARY[$((N - 1))]="$summary"
 }
@@ -798,6 +798,15 @@ EOF
                 rel="${rel%/}"
                 [ -n "$rel" ] || continue
                 p="$repo/$rel"; bn="${p##*/}"
+                # Never offer .env* for deletion. These hold secrets and local
+                # config that no rebuild restores, and being git-ignored — the
+                # very reason they surface here — is exactly how a project keeps
+                # them off version control, so a listed one is unrecoverable if
+                # trashed. Over-matching only skips a cleanup, never deletes
+                # wrongly; the name-matched pass above needs no such guard, as
+                # its names come from the rules and none start with .env.
+                # see docs/DESIGN.md#env-file-exception
+                case "$bn" in .env*) continue ;; esac
                 m=$(classify_method "$bn"); [ -n "$m" ] || m="$GI_METHOD"
                 printf '%s%s%s%s%s\n' "$repo" "$us" "$m" "$us" "$p" >> "$pairs"
             done < <(cd "$repo" 2>/dev/null && git -c core.quotePath=false ls-files -z --others --ignored --exclude-standard --directory 2>/dev/null)

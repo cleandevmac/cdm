@@ -331,6 +331,15 @@ check_mutation 'item key never remapped onto its group root (no group forms)' te
 check_mutation 'repo count tallies items, not distinct repos (dedup dropped)' test_project_grouping.sh \
     's@NF && !seen\[\$0\]++ { c++ }@NF { c++ }@'
 
+# ---- the .env* exception (docs/DESIGN.md#env-file-exception) -----------------
+#
+# Neuter the basename guard so git-ignored .env* files flow through to the delete
+# set. The test's positive half (secret.conf still offered) means an empty scan
+# can't hide the negative half, so this must surface as .env* appearing.
+
+check_mutation '.env* guard neutered (secrets offered for deletion)' test_env_exception.sh \
+    's@case "\$bn" in \.env\*) continue ;; esac@case "$bn" in .envZNOMATCH*) continue ;; esac@'
+
 # ---- the running-app check (docs/DESIGN.md#running-app-check) ---------------
 #
 # The two CAT_PROCS-alignment mutations are the reason this section exists. A
