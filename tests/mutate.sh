@@ -314,21 +314,22 @@ check_mutation 'installed bundle-id sort -u unpinned' test_sort_locale.sh \
 check_mutation 'orphan bid sort -u unpinned' test_sort_locale.sh \
     's@cut -f1 "\$raw" | LC_ALL=C sort -u@cut -f1 "$raw" | sort -u@'
 
-# ---- sibling repo grouping (docs/DESIGN.md#sibling-grouping) -----------------
+# ---- group roots (docs/DESIGN.md#group-roots) -------------------------------
 #
-# Two independent failure modes: the parent never becomes a group (threshold),
-# and a group forms but the row's summary never learns how many repos it stands
-# for (count prefix). The first collapses to per-repo rows; the second leaves a
-# grouped row that lies about being one repo.
+# Three behaviour-bearing steps, each mutated once: the group roots never reach
+# the awk matcher (the load), a repo's key is never remapped onto its enclosing
+# root (the group never forms), and the grouped row never learns how many repos
+# it stands for (the count prefix). All three surface as a wrong row set or a
+# summary that lies about being one repo.
 
-check_mutation 'sibling grouping needs 3 repos, not 2 (siblings never group)' test_project_grouping.sh \
-    's@\$1 >= 2 { sub(@$1 >= 3 { sub(@'
+check_mutation 'group roots never loaded into the matcher (no group forms)' test_project_grouping.sh \
+    's@G\[++ng\] = l@G[ng] = l@'
 
-check_mutation 'group key never remapped onto the parent (no group forms)' test_project_grouping.sh \
-    's@if (p in gp) \$1 = p@if (p in gp) p = p@'
+check_mutation 'item key never remapped onto its group root (no group forms)' test_project_grouping.sh \
+    's@{ \$1 = G\[i\]; break }@{ break }@'
 
-check_mutation 'repo count stuck at zero (group row omits its "N repos" prefix)' test_project_grouping.sh \
-    's@nrepos=\$((nrepos + 1))@nrepos=$((nrepos + 0))@'
+check_mutation 'repo count tallies items, not distinct repos (dedup dropped)' test_project_grouping.sh \
+    's@NF && !seen\[\$0\]++ { c++ }@NF { c++ }@'
 
 # ---- the running-app check (docs/DESIGN.md#running-app-check) ---------------
 #

@@ -316,6 +316,7 @@ function run(argv) {
     (o.scan.prune  || []).forEach(function(p){ out.push(tab('SPRUNE', p)); });
     if (o.scan.maxDepth != null) out.push(tab('SDEPTH', o.scan.maxDepth));
     if (o.scan.maxRepos != null) out.push(tab('SREPOS', o.scan.maxRepos));
+    (o.scan.groups || []).forEach(function(g){ out.push(tab('SGROUP', g)); });
   }
   (o.categories || []).forEach(function(c){
     out.push(tab('C', c.kind || 'paths', c.icon || '', c.name || '', c.method || 'rm', c['default'] ? 1 : 0, c.desc || ''));
@@ -349,7 +350,7 @@ CAT_DEFAULT=(); CAT_PATHS=(); CAT_KB=(); CAT_SEL=(); N=0
 CAT_PMETHOD=(); CAT_SUMMARY=(); CAT_PROCS=()
 
 # Project-scan config + pending project/gitignore categories (filled by JSON).
-SCAN_ROOTS=(); SCAN_PRUNE=(); SCAN_DEPTH=8; SCAN_MAXREPOS=400
+SCAN_ROOTS=(); SCAN_PRUNE=(); SCAN_DEPTH=8; SCAN_MAXREPOS=400; SCAN_GROUPS=()
 PROJ_ICON=(); PROJ_NAME=(); PROJ_METHOD=(); PROJ_DEFAULT=(); PROJ_DESC=(); PROJ_DIRS=(); PROJ_N=0
 GI_ICON=""; GI_NAME=""; GI_METHOD="trash"; GI_DEFAULT=0; GI_DESC=""; GI_ON=0
 # Pending container (docker/podman) categories (filled by JSON).
@@ -486,7 +487,7 @@ load_patterns() {
     CAT_ICON=(); CAT_NAME=(); CAT_DESC=(); CAT_METHOD=()
     CAT_DEFAULT=(); CAT_PATHS=(); CAT_KB=(); CAT_SEL=(); N=0
     CAT_PMETHOD=(); CAT_SUMMARY=(); CAT_PROCS=()
-    SCAN_ROOTS=(); SCAN_PRUNE=(); SCAN_DEPTH=8; SCAN_MAXREPOS=400
+    SCAN_ROOTS=(); SCAN_PRUNE=(); SCAN_DEPTH=8; SCAN_MAXREPOS=400; SCAN_GROUPS=()
     PROJ_ICON=(); PROJ_NAME=(); PROJ_METHOD=(); PROJ_DEFAULT=(); PROJ_DESC=(); PROJ_DIRS=(); PROJ_N=0
     GI_ON=0; GI_ICON=""; GI_NAME=""; GI_METHOD="trash"; GI_DEFAULT=0; GI_DESC=""
     CONT_ICON=(); CONT_NAME=(); CONT_METHOD=(); CONT_DEFAULT=(); CONT_DESC=(); CONT_ENGINES=(); CONT_N=0
@@ -546,6 +547,7 @@ parse_pattern_stream() {
             SPRUNE) SCAN_PRUNE[${#SCAN_PRUNE[@]}]="$rest" ;;
             SDEPTH) SCAN_DEPTH="$rest" ;;
             SREPOS) SCAN_MAXREPOS="$rest" ;;
+            SGROUP) SCAN_GROUPS[${#SCAN_GROUPS[@]}]="$rest" ;;
             C)
                 flush_pattern_category
                 IFS=$us read -r ckind cicon cname cmethod cdefault cdesc <<EOF
@@ -649,16 +651,22 @@ flush_project_category() {
     local summary
     summary=$(printf '%s\n' "$names" | grep -v '^$' | LC_ALL=C sort -u | awk '
         { s = s (NR > 1 ? ", " : "") $0 } END { print s }')
-    # When this key is a sibling-group parent (docs/DESIGN.md#sibling-grouping) it
-    # stands for >=2 repos, so lead the summary with the repo count. gpfile and
-    # REPO_ROOTS reach here from scan_projects via dynamic scope, the same way
-    # project_key reads REPO_ROOTS.
-    local nrepos=0 rr
+    # When this key is a group root (docs/DESIGN.md#group-roots), lead the summary
+    # with how many repos it actually stands for. That is the number of repos that
+    # CONTRIBUTED an item — not every repo under the root, most of which are clean
+    # and would make the count (e.g. "18 repos") wildly overstate a row holding junk
+    # from seven. Each item's owning repo is project_key(item); dedup with awk (not a
+    # new `sort -u`) and count. gpfile/REPO_ROOTS reach here via dynamic scope, the
+    # same way project_key reads REPO_ROOTS.
     if [ -n "${gpfile:-}" ] && grep -qxF "$key" "$gpfile" 2>/dev/null; then
-        for rr in ${REPO_ROOTS[@]+"${REPO_ROOTS[@]}"}; do
-            [ "${rr%/*}" = "$key" ] && nrepos=$((nrepos + 1))
-        done
-        [ "$nrepos" -ge 2 ] && summary="${nrepos} repos · ${summary}"
+        local nrepos ip
+        nrepos=$(printf '%s\n' "$paths" | grep -v '^$' | {
+            while IFS= read -r ip; do project_key "$ip"; printf '\n'; done
+        } | awk 'NF && !seen[$0]++ { c++ } END { print c + 0 }')
+        if [ "$nrepos" -ge 1 ]; then
+            local unit=repos; [ "$nrepos" -eq 1 ] && unit=repo
+            summary="${nrepos} ${unit} · ${summary}"
+        fi
     fi
     add_category "📁" "$disp" \
         "Project junk in ${rel}: ${summary}. Regenerable build/dependency dirs are deleted; other git-ignored items (e.g. local .env/config) go to the Trash (recoverable)." \
@@ -753,18 +761,18 @@ EOF
         [ -n "$line" ] && REPO_ROOTS[${#REPO_ROOTS[@]}]="$line"
     done < <(awk '{ print length, $0 }' "$repos_file" 2>/dev/null | sort -rn | cut -d' ' -f2- | awk '!seen[$0]++')
 
-    # Sibling grouping: a parent dir holding >=2 repo roots collapses ALL its
-    # repos into one aggregate row keyed by that parent, so a directory full of
-    # machine-generated repos (each its own .git) is one menu row, not dozens.
-    # gpfile is the set of such parents; the dedup pass below remaps each item's
-    # key onto it. see docs/DESIGN.md#sibling-grouping
-    local gpfile="$SCAN_DIR/proj_group_parents"; : > "$gpfile"
-    if [ "${#REPO_ROOTS[@]}" -gt 0 ]; then
-        local rr
-        for rr in "${REPO_ROOTS[@]}"; do printf '%s\n' "${rr%/*}"; done \
-            | LC_ALL=C sort | uniq -c \
-            | awk '$1 >= 2 { sub(/^ *[0-9]+ /, ""); print }' > "$gpfile"
-    fi
+    # Group roots (scan.groups in the rules): explicit directories that hold a
+    # crowd of machine-generated repos — an AI agent that keeps each session as
+    # its own git repo leaves dozens under ~/.gemini/antigravity/brain. Every repo
+    # AT OR UNDER such a root collapses into ONE aggregate row keyed by the root,
+    # instead of one row per repo. gpfile is the expanded root list; the dedup pass
+    # below remaps each item's key onto its enclosing root.
+    # see docs/DESIGN.md#group-roots
+    local gpfile="$SCAN_DIR/proj_group_roots"; : > "$gpfile"
+    local g
+    for g in ${SCAN_GROUPS[@]+"${SCAN_GROUPS[@]}"}; do
+        [ -n "$g" ] && printf '%s\n' "$(expand_tilde "$g")" >> "$gpfile"
+    done
 
     # Build (project-key US method US path) triples for every junk item. Fields
     # are US-separated (\x1f) — not a path character — so paths with spaces are
@@ -799,16 +807,18 @@ EOF
 
     # De-duplicate and drop any item nested under another kept item; sorting by path
     # puts an ancestor immediately before its descendants. The same pass remaps each
-    # surviving item's key onto its sibling-group parent (docs/DESIGN.md#sibling-grouping)
-    # so grouped repos land in one contiguous block for the final -k1,1 grouping sort.
+    # surviving item's key (its repo root) onto the group root that encloses it, when
+    # one does (docs/DESIGN.md#group-roots), so every repo under a group root lands in
+    # one contiguous block for the final -k1,1 grouping sort.
     # see docs/DESIGN.md#dedup-nesting
     local sorted="$SCAN_DIR/proj_sorted"
     LC_ALL=C sort -t "$us" -k3 "$pairs" \
         | awk -F "$us" -v gpf="$gpfile" '
-            BEGIN { OFS = FS; while ((getline l < gpf) > 0) if (l != "") gp[l] = 1 }
+            BEGIN { OFS = FS; ng = 0; while ((getline l < gpf) > 0) if (l != "") G[++ng] = l }
             { if ($3==kept || (kept!="" && substr($3,1,length(kept)+1)==kept"/")) next
               kept = $3
-              p = $1; sub(/\/[^\/]*$/, "", p); if (p in gp) $1 = p
+              for (i = 1; i <= ng; i++)
+                  if ($1 == G[i] || substr($1,1,length(G[i])+1) == G[i]"/") { $1 = G[i]; break }
               print }' \
         | LC_ALL=C sort -t "$us" -k1,1 -s > "$sorted"
 
