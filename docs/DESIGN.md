@@ -309,8 +309,10 @@ An unmatched glob expands to itself, which the -e test discards.
 ---------------------------------------------------------------------------
 Project-junk scanning (node_modules, dist, build, target, git-ignored, ...)
 
-Junk is grouped BY PROJECT — one category per git repository — so you can pick
-exactly which projects to clean and see what each holds. Junk that isn't inside
+Junk is grouped BY PROJECT — one category per git repository, except that a
+directory holding two or more sibling repos collapses them into a single
+aggregate row (see #sibling-grouping) — so you can pick exactly which projects to
+clean and see what each holds. Junk that isn't inside
 a repo is skipped (it's almost always a tool/language cache the cache rules
 already cover, not one of your projects). Within a project every item keeps its
 own method: known regenerable build/dependency dirs are deleted (they rebuild),
@@ -362,6 +364,35 @@ file inside a dir we already delete) — sorting by path puts an ancestor
 immediately before its descendants, so a single prefix test suffices; this
 also keeps the per-project size total from double-counting. Then group by
 project key for stable, contiguous per-project categories.
+
+<a id="sibling-grouping"></a>
+## Grouping sibling repos
+
+"One git repo = one row" is the right unit until a single directory holds a
+crowd of them. Machine-generated stores do exactly this: an AI agent that keeps
+each session as its own git repo leaves `~/.gemini/antigravity/brain/<uuid>/`
+dozens deep, and the scan — faithfully — emits one row per repo, burying every
+real project under near-identical noise.
+
+So the row unit is the **project, unless its siblings outvote it**: any parent
+directory that directly holds two or more repo roots collapses all of them into
+a single aggregate row keyed by that parent. `gpfile` is the set of such parents
+(repo-root dirnames with count >= 2); the same awk that de-duplicates nested
+items rewrites each surviving item's key from its repo root to that parent when
+the parent is in the set, so grouped repos arrive contiguous for the final
+`-k1,1` grouping sort and flush emits one category for the lot. The threshold is
+two, not "many" — a plain `~/code` with two checkouts groups too — because the
+selected behaviour is *always* group siblings, and a directory of exactly two
+generated repos is the same noise as a directory of fifty.
+
+Grouping is a **display/bucketing** decision and nothing more. The item paths
+and their per-path methods (rm vs trash) ride through untouched, so
+`is_safe_target` still gates every individual path exactly as before — the
+aggregate row is just a category that happens to span more than one repo. Its
+summary leads with the repo count (`18 repos · .tempmediaStorage, tasks, …`),
+counted in `flush_project_category` from the repo roots whose dirname is the
+group key — the one place the count is knowable, since by then the items have
+been flattened into one path list.
 
 <a id="bundle-id-shape"></a>
 ## looks_like_bundle_id and the ASCII set

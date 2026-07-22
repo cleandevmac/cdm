@@ -314,6 +314,22 @@ check_mutation 'installed bundle-id sort -u unpinned' test_sort_locale.sh \
 check_mutation 'orphan bid sort -u unpinned' test_sort_locale.sh \
     's@cut -f1 "\$raw" | LC_ALL=C sort -u@cut -f1 "$raw" | sort -u@'
 
+# ---- sibling repo grouping (docs/DESIGN.md#sibling-grouping) -----------------
+#
+# Two independent failure modes: the parent never becomes a group (threshold),
+# and a group forms but the row's summary never learns how many repos it stands
+# for (count prefix). The first collapses to per-repo rows; the second leaves a
+# grouped row that lies about being one repo.
+
+check_mutation 'sibling grouping needs 3 repos, not 2 (siblings never group)' test_project_grouping.sh \
+    's@\$1 >= 2 { sub(@$1 >= 3 { sub(@'
+
+check_mutation 'group key never remapped onto the parent (no group forms)' test_project_grouping.sh \
+    's@if (p in gp) \$1 = p@if (p in gp) p = p@'
+
+check_mutation 'repo count stuck at zero (group row omits its "N repos" prefix)' test_project_grouping.sh \
+    's@nrepos=\$((nrepos + 1))@nrepos=$((nrepos + 0))@'
+
 # ---- the running-app check (docs/DESIGN.md#running-app-check) ---------------
 #
 # The two CAT_PROCS-alignment mutations are the reason this section exists. A
