@@ -135,6 +135,114 @@ check_mutation 'human_to_kb: kB treated as binary' test_helpers.sh \
 check_mutation 'engine_ok accepts anything' test_helpers.sh \
     's|case "\$1" in docker\|podman\|nerdctl) return 0 ;; \*) return 1 ;; esac|return 0|'
 
+# ---- disk status (docs/DESIGN.md#disk-status) -------------------------------
+#
+# Two families. The df PARSE is mutated against a fake df the test controls, so
+# the columns, the record and the derivation are pinned exactly; the -k is
+# mutated against the real filesystem, which is the one thing a fake df cannot
+# see — every wrong unit still returns a plausible integer.
+
+check_mutation 'df asked for MiB instead of KiB' test_disk_status.sh \
+    's|\$(df -Pk "\$HOME"|$(df -Pm "$HOME"|'
+
+check_mutation 'df parse reads the header row' test_disk_status.sh \
+    "s|awk 'NR==2 {print \$2, \$4}'|awk 'NR==1 {print \$2, \$4}'|"
+
+check_mutation 'free read from df Used instead of Available' test_disk_status.sh \
+    "s|awk 'NR==2 {print \$2, \$4}'|awk 'NR==2 {print \$2, \$3}'|"
+
+check_mutation 'used no longer derived as total - available' test_disk_status.sh \
+    's|DISK_USED_KB=\$((total - avail))|DISK_USED_KB=$((total + avail))|'
+
+check_mutation 'available not clamped to capacity (used goes negative)' test_disk_status.sh \
+    's|\[ "\$avail" -gt "\$total" \] && avail="\$total"|:|'
+
+check_mutation 'a zero-capacity filesystem is accepted' test_disk_status.sh \
+    's|\[ "\$total" -gt 0 \] \|\| return 1|:|'
+
+# The fixture that catches this feeds a field bash arithmetic WOULD accept
+# (0x10 -> 16) rather than one that makes it fatal: a dash aborts the arithmetic
+# outright, and an abort is indistinguishable from the refusal the guard exists
+# to produce — it even unwinds past the assertion that was watching for it.
+check_mutation 'a non-numeric "available" is accepted' test_disk_status.sh \
+    's|    case "\$avail" in ..\|\*\[!0-9\]\*) return 1 ;; esac|    :|'
+
+# Its twin — dropping the same guard on `total` — is deliberately absent: it is
+# an equivalent mutant, because `[ "$total" -gt 0 ] || return 1` on the next
+# line is itself a numeric gate. bash's `[` refuses a non-integer with a status
+# of 2 (it does not read 0x10 as 16 the way $(( )) does), so every value the
+# case would have caught is refused one line later anyway. `avail` has no such
+# backstop — its only comparison is a clamp whose failure is not an error path —
+# which is why that half IS mutated. Verified to survive rather than assumed;
+# the guard stays in cdm because the two fields should visibly answer to the
+# same rule, not because behavior depends on it.
+
+check_mutation 'disk_used_pct truncates instead of rounding' test_disk_status.sh \
+    's|(DISK_USED_KB \* 100 + DISK_TOTAL_KB / 2) / DISK_TOTAL_KB|(DISK_USED_KB * 100) / DISK_TOTAL_KB|'
+
+check_mutation 'disk_line renders a disk that was never measured' test_disk_status.sh \
+    's|    \[ "\$DISK_TOTAL_KB" -gt 0 \] \|\| return 1|    :|'
+
+# The one that would have shipped silently: disk_line is called from inside
+# $(...), where a refresh sets the globals in a subshell and loses them — the
+# same trap compute_sizes_write documents. The menu row would then show a disk
+# it never measured.
+check_mutation 'disk_line refreshes instead of formatting' test_disk_status.sh \
+    's|^disk_line() {|disk_line() { disk_stats;|'
+
+check_mutation 'total_kb counts only the selected rows' test_disk_status.sh \
+    's|^total_kb()       { local i t=0; for i in \$(cat_indices); do t=|total_kb()       { local i t=0; for i in $(cat_indices); do [ "${CAT_SEL[$i]}" = "1" ] \&\& t=|'
+
+# ---- the menu's status row (docs/DESIGN.md#status-line) ---------------------
+#
+# Every one of these produces a row WIDER than the window it was built for,
+# which is not a cosmetic bug: the frame is a fixed height, so an extra physical
+# line scrolls the whole menu on every repaint.
+
+check_mutation 'status row never sheds the disk figures' test_disk_status.sh \
+    's|if \[ "\$tier" -le 1 \] && \[ -n "\$disk" \]; then|if [ -n "$disk" ]; then|'
+
+check_mutation 'status row never degrades at all' test_disk_status.sh \
+    's|\[ "\$_DW" -le "\$cols" \] && break|break|'
+
+check_mutation 'status row plain shadow loses the max (mis-measured)' test_disk_status.sh \
+    's|_SS="\${_SS}\${DIM} of \${tot_h}\${NC}"; _SP="\${_SP} of \${tot_h}"|_SS="${_SS}${DIM} of ${tot_h}${NC}"|'
+
+check_mutation 'status row plain shadow loses the disk (mis-measured)' test_disk_status.sh \
+    's|_SS="\${_SS}   \${DIM}Disk \${disk}\${NC}"; _SP="\${_SP}   Disk \${disk}"|_SS="${_SS}   ${DIM}Disk ${disk}${NC}"|'
+
+# One is deliberately absent: measuring _SS instead of _SP (`dwidth "$_SP"` ->
+# `dwidth "$_SS"`). It is the exact defect _P/_SP exist to prevent — escapes
+# carry no columns, so the styled string measures far too wide — but the suite
+# runs with stdout redirected, where cdm's own `[ -t 1 ]` check leaves every
+# colour empty and the two strings are byte-identical. No assertion in a piped
+# test run can distinguish it. The lockstep rows above cover the reachable half
+# of that risk; verified to survive rather than assumed.
+
+# ---- the post-clean prompt (docs/DESIGN.md#after-clean-menu) ----------------
+
+# Addressed to the function: `*) return 1 ;;` is a shape that appears in other
+# case statements, and a global rewrite would mutate one of those instead.
+check_mutation 'post-clean prompt defaults to rescan, not quit' test_after_clean_menu.sh \
+    '/^after_clean_menu()/,/^}/ s|            \*)   return 1 ;;|            *)   return 0 ;;|'
+
+check_mutation 'post-clean prompt ignores an uppercase R' test_after_clean_menu.sh \
+    's|            r\|R) return 0 ;;|            r) return 0 ;;|'
+
+check_mutation 'donating quits instead of re-asking' test_after_clean_menu.sh \
+    's|            b\|B) open_donate ;;|            b\|B) open_donate; return 1 ;;|'
+
+# The key choice itself. `d` is the main menu's details key, and a prompt that
+# quietly takes it back gives one letter two meanings across the tool.
+check_mutation 'the donate key moves back onto d (collides with details)' test_after_clean_menu.sh \
+    's|            b\|B) open_donate ;;|            d\|D) open_donate ;;|'
+
+check_mutation 'the donate key opens something other than DONATE_URL' test_after_clean_menu.sh \
+    's|if open "\$DONATE_URL" >/dev/null 2>&1; then|if open "$LOG_FILE" >/dev/null 2>\&1; then|'
+
+check_mutation 'a failed open swallows the URL' test_after_clean_menu.sh \
+    's|        printf .%b\\n. "  \${CYAN}\${DONATE_URL}\${NC}"|        :|'
+
 check_mutation 'expand_tilde ignores bare ~' test_helpers.sh \
     's|"~") echo "\$HOME" ;;|"~") echo "~" ;;|'
 

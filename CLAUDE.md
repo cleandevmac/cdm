@@ -149,6 +149,11 @@ or `mapfile`.
 arrays — so each writes `$SCAN_DIR/size_$i`, and `compute_sizes_read` loads them back in the parent.
 Keep that split; assigning `CAT_KB` inside the subshell silently does nothing.
 
+Same hazard, different function: `disk_stats` sets `DISK_TOTAL_KB`/`DISK_USED_KB`/`DISK_FREE_KB`, so
+it has to be *called* from the parent — `$(disk_stats)` measures the disk and throws the answer
+away. Its formatter, `disk_line`, deliberately does not refresh for exactly that reason: it is used
+inside `$(...)` throughout. See `docs/DESIGN.md#disk-status`.
+
 ### Safety is enforced below the rules, not by them
 
 `is_safe_target` gates every deletion and no rule can opt out of it. It rejects `/`, `$HOME` itself,
@@ -302,9 +307,11 @@ name, and the README's downloads badge counts fetches of that asset.
   it merges — before any release. Landing-page and README claims about what `cdm` cleans must track
   `rules/`.
 - The tool makes **no network calls** other than fetching its own rule JSON. There is no telemetry
-  and no phone-home; the donate URL is a string it prints. Keep it that way.
-- The donate line appears only in `--help` and once after a clean that actually freed something —
-  never on a scan or a dry run.
+  and no phone-home. The one exception is not a request cdm makes: pressing `b` at the post-clean
+  prompt hands the donate URL to `open(1)`, i.e. to the user's browser, on an explicit keypress.
+  Keep it that way — nothing is ever *sent* anywhere. See `docs/DESIGN.md#donate-link`.
+- The donate URL appears only in `--help` and after a clean that actually freed something (the
+  printed line, and the `b` key on the prompt that follows it) — never on a scan or a dry run.
 - Every clean appends a receipt to `~/.cleandevmac/clean.log`; a scan or a `--dry-run` never writes
   to it. `rotate_log` caps it at 1 MiB, keeping the newest 256 KiB — the tool that reclaims disk has
   no business being the thing quietly consuming it. Same reasoning behind `sweep_stale_scan_dirs`:

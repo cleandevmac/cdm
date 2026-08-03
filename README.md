@@ -15,7 +15,7 @@ The downloads badge counts fetches of the `cdm` release asset. Every `curl` inst
 
 Site: **<https://cleandevmac.github.io>**
 
-macOS only. Pure bash, no dependencies. Zero telemetry — the only network call `cdm` ever makes is fetching its own rule JSON.
+macOS only. Pure bash, no dependencies. Zero telemetry — the only network call `cdm` ever makes is fetching its own rule JSON. (Pressing `b` after a clean opens the donate link in your browser; nothing is ever sent anywhere.)
 
 ## Run it
 
@@ -72,6 +72,8 @@ Make sure `~/.local/bin` is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH
 
 ## TUI keys
 
+`cdm` shows your disk — total, used, free — before it scans, the most it could reclaim once the scan finishes, and what the disk looks like again after a clean.
+
 | Key | Action |
 | --- | --- |
 | `↑` / `↓`, `k` / `j` | Move |
@@ -80,6 +82,8 @@ Make sure `~/.local/bin` is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH
 | `Enter` (or `d`) | Show the exact paths and sizes behind an item |
 | `c` | Clean — builds an itemized plan, confirm with `y` |
 | `q` (or `Esc`) | Quit |
+
+After a clean it prints the receipt and asks what next: `r` rescan · `b` buy me a coffee · `q` quit (the default — Enter or any other key does the same).
 
 Items are sorted biggest-first. Safe regenerable caches are pre-selected; the Maven repository, Playwright browsers, crash logs, project folders and orphaned app data all start unchecked — `s` resets to that default selection.
 

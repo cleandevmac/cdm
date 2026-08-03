@@ -15,7 +15,7 @@ La insignia de descargas cuenta las peticiones al recurso de release `cdm`. Cada
 
 Sitio: **<https://cleandevmac.github.io>**
 
-Solo para macOS. Bash puro, sin dependencias. Cero telemetría: la única llamada de red que hace `cdm` es la descarga de su propio JSON de reglas.
+Solo para macOS. Bash puro, sin dependencias. Cero telemetría: la única llamada de red que hace `cdm` es la descarga de su propio JSON de reglas. (Pulsar `b` después de una limpieza abre el enlace de donación en tu navegador; nunca se envía nada.)
 
 ## Ejecútalo
 
@@ -71,6 +71,8 @@ Asegúrate de que `~/.local/bin` esté en tu `PATH` (`export PATH="$HOME/.local/
 
 ## Teclas de la TUI
 
+`cdm` muestra tu disco — total, usado, libre — antes de escanear, lo máximo que podría recuperar cuando termina el escaneo, y cómo queda el disco después de una limpieza.
+
 | Tecla | Acción |
 | --- | --- |
 | `↑` / `↓`, `k` / `j` | Moverse |
@@ -79,6 +81,8 @@ Asegúrate de que `~/.local/bin` esté en tu `PATH` (`export PATH="$HOME/.local/
 | `Enter` (o `d`) | Mostrar las rutas y los tamaños exactos detrás de un elemento |
 | `c` | Limpiar: construye un plan detallado, confirma con `y` |
 | `q` (o `Esc`) | Salir |
+
+Después de una limpieza imprime el resumen y pregunta qué sigue: `r` volver a escanear · `b` invitarme a un café · `q` salir (la opción por defecto — Enter o cualquier otra tecla hacen lo mismo).
 
 Los elementos se ordenan de mayor a menor. Las cachés regenerables seguras vienen premarcadas; el repositorio de Maven, los navegadores de Playwright, los registros de fallos, las carpetas de proyectos y los datos de aplicaciones huérfanos empiezan sin marcar. `s` restablece esa selección por defecto.
 

@@ -189,6 +189,48 @@ bash's own printf is not an escape hatch either — it reads `%f` through the sa
 LC_NUMERIC, and worse, under de_DE it cannot even parse `1.5` as *input*
 (`printf: 1.5: invalid number`); it wants `1,5`.
 
+<a id="disk-status"></a>
+## Disk status
+
+`disk_stats` reads the volume holding `$HOME` into `DISK_TOTAL_KB`,
+`DISK_USED_KB` and `DISK_FREE_KB`; `disk_line` renders the three. It runs
+*before* the scan and again after a clean, which is the whole point: "freed
+3.4 GB" means very little on its own, and a tool that reclaims disk should say
+what the disk actually looks like on both sides of the operation. Every number
+cdm reports is otherwise a measurement of things it might delete — this is the
+one that belongs to the machine.
+
+Four decisions in a ten-line function:
+
+- **`df "$HOME"`, not `df /`.** Since Catalina the root is its own read-only
+  system volume, so `/`'s *Used* is the ~12 GB of macOS itself; a data volume
+  with 143 GB on it reports as 15% used. `$HOME` is also simply the right
+  question — it is where every path cdm touches lives, and a home on an external
+  or secondary volume is answered correctly for free. (On a stock single-
+  container APFS Mac the two volumes share a capacity and a free figure, so this
+  choice is *unobservable* there and no test can pin it. It is still wrong on
+  the machines where it differs, which is why it is written this way.)
+- **`used` is derived as `total - avail`, never df's `Used` column.** On APFS
+  those two do not reconcile: snapshots, purgeable space and the sibling system
+  volume all sit in the difference. Three numbers printed side by side on one
+  line have to add up, and the two a user can act on are capacity and free.
+- **`-P`.** POSIX output puts each filesystem on exactly one record. Without it
+  a long device name wraps onto its own line and the numbers land on record 3,
+  where `NR==2` finds a device name to parse as a size. `-k` for KiB, the unit
+  every other size in the tool is already in.
+- **Both fields are validated as bare decimal digits**, and a refusal zeroes all
+  three globals rather than leaving a half-parse. `disk_line` and the menu row
+  both key off `DISK_TOTAL_KB > 0` to decide whether there is anything to show,
+  so a partial answer would print a row claiming a 0 KB disk. Note that
+  `$(( ))` would happily read `0x10` as 16 — "numeric enough for arithmetic" is
+  not the same question as "a size df measured".
+
+`disk_stats` sets globals, so it must be called from the parent shell; inside
+`$(...)` the assignments die with the subshell, the same trap
+`compute_sizes_write` documents. `disk_line` therefore *formats only* and never
+refreshes — it is called from inside command substitutions all over the script,
+and a refresh there would be silently lost.
+
 <a id="fd-3"></a>
 ## Keypresses come from fd 3, never fd 0
 
@@ -561,6 +603,31 @@ independent, so --no-color picks the same tier.
   2: self-evident labels dropped     76 cols (64)
   3: caps only                       44 cols (38)
 
+<a id="status-line"></a>
+## build_status_line
+
+build_status_line <cols> — the menu's second row: what is selected, what the
+scan found in total, and what the volume looks like. Sets `_SS`/`_SP` exactly as
+build_keys_line sets `_S`/`_P`, and for the same reason — a styled string cannot
+be measured, so a plain shadow is built alongside it and the two must stay in
+lockstep.
+
+It degrades by tier rather than by clipping, in the order the numbers stop being
+about this run:
+  1: selection, max reclaimable, disk    ~79 cols (grows with the figures)
+  2: selection, max reclaimable          ~45
+  3: selection only                      ~34
+
+The disk goes first because it is context; the max reclaimable goes second
+because it does not move as the user toggles rows. What survives to the floor is
+the pair that answers "what happens if I press c right now".
+
+This row used to be a fixed string short enough that fitting was never a
+question. It is not any more, and the failure mode is not cosmetic: the frame is
+a fixed height (see the chrome note below), so a status row that wraps to two
+physical lines pushes the frame past the bottom of the window and scrolls the
+terminal on *every* repaint.
+
 <a id="menu-chrome"></a>
 ## The menu's fixed chrome
 
@@ -665,6 +732,50 @@ Deliberately truncate-in-place rather than clean.log.1 + clean.log.2: a
 rotation scheme that keeps N generations still grows without bound in the
 only dimension that matters here (total bytes on disk), which is the thing
 this exists to stop. One file, one ceiling.
+
+<a id="after-clean-menu"></a>
+## The post-clean prompt
+
+after_clean_menu — the one question asked after a clean has run: rescan (`r`),
+open the donate link (`b`), or quit (`q`). Returns 0 to rescan and 1 to quit; the main loop does
+the work, so the prompt only decides.
+
+**Quit is the default**, and everything that is not an explicit `r` or `b`
+reaches it — Enter, `q`, Esc, an unrecognized key, a closed stdin. The clean has
+already happened by this point, so there is nothing to lose by leaving and no
+reason to nag someone into answering precisely. It replaced an unconditional
+"press any key to return to the menu" followed by an automatic rescan: that
+rescan cost a full second scan every time, and the common case — clean, read the
+receipt, leave — had to walk back through a menu to get out.
+
+`b` is the exception that re-asks, because opening a browser is not an answer to
+"what next". Press it three times and the link opens three times; the prompt is
+still waiting afterwards.
+
+It is `b` — for the "buy me a coffee" label it sits beside — and not the obvious
+`d` for donate, because the menu one screen earlier already spends `d` on
+details. The two prompts never share a screen, so nothing would have broken; one
+letter carrying two meanings is simply a debt a keymap never pays off. `d` is
+therefore not a key here at all, and takes the default like anything else.
+
+The prompt reads fd 3 like every other keypress in the tool
+([why](#fd-3)), and absorbs a SIGWINCH-interrupted read the way the confirm and
+wait_any_key do, so a resize is never mistaken for an answer.
+
+<a id="donate-link"></a>
+## The donate link is opened, not fetched
+
+`open_donate` hands DONATE_URL to `open(1)` — the only thing in cdm that can
+reach the network on a user's behalf, and it does so on a single explicit
+keypress, after a clean, in the one place the URL was already being printed.
+cdm still makes no request of its own: rule JSON remains the only thing it
+*fetches*, there is no telemetry, and nothing is sent anywhere. Handing a URL to
+the user's browser is what clicking the printed link would have done anyway.
+
+When `open` is unavailable or refuses — piped into a container, over ssh, a Mac
+with no handler for https — the URL is printed instead. That fallback is not
+politeness: the keypress means "show me this", and a silent failure would look
+like the tool ignoring it.
 
 <a id="resize-redraw"></a>
 ## Redraw on resize
