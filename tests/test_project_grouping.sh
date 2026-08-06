@@ -17,14 +17,27 @@
 
 . "$(dirname "$0")/lib.sh"
 
+# Name-matched junk must be PROVEN git-ignored before it is offered
+# (docs/DESIGN.md#ignored-proof), so these have to be real repos and the scan
+# needs a real git binary. On the macOS runner git always ships; degrade to a
+# clean skip rather than a spurious failure if it is somehow absent.
+if ! command -v git >/dev/null 2>&1; then
+    printf '%-28s  skipped (no git)\n' "$T_FILE"
+    exit 0
+fi
+
 # --- a sandbox of git repos -------------------------------------------------
 # Two repos under a configured group root (must collapse), and two UNCONFIGURED
 # siblings elsewhere (must each keep their own row — grouping is named, not by
-# count). Name-matched junk (node_modules/dist) rather than git-ignored files, so
-# the scan needs only `find` + a real .git DIRECTORY, not a working `git` binary.
-# The FIRST grouped repo holds TWO junk dirs: the group then spans 3 items but only
-# 2 repos, so the row's "N repos" count must dedup by repo, not tally items.
-mkrepo() { mkdir -p "$1/.git" "$1/node_modules"; }
+# count). Each repo ignores its junk, which is what makes the junk offerable at
+# all. The FIRST grouped repo holds TWO junk dirs: the group then spans 3 items
+# but only 2 repos, so the row's "N repos" count must dedup by repo, not tally
+# items.
+mkrepo() {
+    mkdir -p "$1/node_modules"
+    ( cd "$1" && git init -q ) || { printf '%s: git init failed\n' "$T_FILE" >&2; exit 1; }
+    printf '%s\n' node_modules dist > "$1/.gitignore"
+}
 mkrepo "$HOME/store/aaaaaaaa-1111"; mkdir -p "$HOME/store/aaaaaaaa-1111/dist"
 mkrepo "$HOME/store/bbbbbbbb-2222"
 mkrepo "$HOME/code/projA"

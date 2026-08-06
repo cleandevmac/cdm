@@ -356,7 +356,8 @@ configured group root, where every repo beneath it collapses into a single
 aggregate row (see #group-roots) — so you can pick exactly which projects to
 clean and see what each holds. Junk that isn't inside
 a repo is skipped (it's almost always a tool/language cache the cache rules
-already cover, not one of your projects). Within a project every item keeps its
+already cover, not one of your projects). Everything offered is git-ignored,
+without exception (see #ignored-proof). Within a project every item keeps its
 own method: known regenerable build/dependency dirs are deleted (they rebuild),
 while any other git-ignored entry (local config, logs) is moved to the
 Trash so it can be recovered. One shape is never offered at all — `.env*` files
@@ -432,6 +433,61 @@ regenerable target dirs, while pruning heavy/irrelevant trees. Only a real
 submodules) is intentionally ignored, so a folder is a "project" only when
 it directly contains a .git directory. .git is captured in its own branch
 (not the prune list) so we learn the repo but never descend it.
+
+<a id="ignored-proof"></a>
+## A matching name is not evidence — the git-ignored proof
+
+`find` knows basenames and nothing else, and for a long time that was the whole
+test: a directory called `dist` was offered for permanent `rm` because the rules
+list `dist`. But every name in those rules is also a name a project may
+legitimately **track** — `build/` holding release scripts, `out/` holding
+generated-but-committed assets, `Pods/` vendored on purpose (CocoaPods documents
+that as a supported workflow), a `dist/` committed for consumers, `target/` as an
+ordinary source folder in a project that isn't Rust or Maven. For those, `rm` is
+not a re-buildable inconvenience; it is deleting the user's source.
+
+The evidence cdm needs already exists, and the project itself wrote it: a
+`.gitignore` entry is a maintainer stating in the repo that this path is
+reproducible. So a name match now only nominates a candidate, and
+`scan_projects` proves each one git-ignored before it can be offered.
+
+The proof is one `git ls-files --others --ignored --exclude-standard
+--directory` per repo — the same command the git-ignored category already ran,
+now hoisted so a repo is walked at most once and both passes read the one
+listing. That exact option set is what makes it a proof rather than a guess:
+
+  * `--others --ignored` reports only paths that are BOTH ignored and untracked.
+    `git check-ignore` would have been cheaper and is the obvious reach, but it
+    answers a different question — whether a rule matches the path — and returns
+    true for the `dist/` that a library lists in `.gitignore` and then commits
+    with `git add -f`. Ignore rules do not apply to tracked files, so
+    "ignore-listed" and "disposable" are not the same claim.
+  * `--directory` collapses a wholly ignored tree to one entry, so an ignored
+    `tmpstuff/dist` is reported as `tmpstuff/` and never by its own name. The
+    proof therefore accepts the candidate **or any ancestor below its repo
+    root**. A directory holding tracked content is never collapsed, which is
+    what keeps the committed-`dist/` case out.
+  * The ancestor walk stops **at** the candidate's own repo root, never above
+    it. A repo whose `.gitignore` hides a nested checkout reports that checkout
+    as ignored; read one level too far and the outer repo's opinion would
+    authorize deleting everything the inner repo tracks.
+
+Three states, then, and only the first is offered: ignored-and-untracked (junk),
+tracked (never), and untracked-but-not-ignored (unproven — also never). That
+third case is a deliberate, visible cost: a repo with no `.gitignore` at all
+keeps its `node_modules`. It is the same fail-safe direction as the `.env*`
+exception and the `procs` check — over-refusing costs a missed cleanup, and the
+alternative is guessing about a permanent `rm`. It also falls out of the rule
+rather than being bolted on: with no `.gitignore` there is no statement from the
+project, and cdm's whole claim here is that it only deletes what the project
+already called disposable.
+
+Two consequences worth stating plainly. The project scan now needs a working
+`git`; without one nothing is provable and nothing is offered, which is the
+correct failure direction but is a hard stop rather than a degraded mode. And
+`scan.maxRepos` now bounds the git work for both passes, so a repo past the cap
+contributes nothing at all — candidate-holding repos are therefore walked first,
+so the cap sheds repos that had nothing name-matched to lose.
 
 <a id="dedup-nesting"></a>
 ## De-duplicating nested items

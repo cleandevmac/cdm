@@ -330,6 +330,39 @@ check_mutation 'looks_like_bundle_id stops requiring reverse-DNS' test_bundle_id
 # is the half doing the locale-proofing, and removing it is the mutation above.
 # see docs/DESIGN.md#bundle-id-shape
 
+# ---- the git-ignored proof (docs/DESIGN.md#ignored-proof) -------------------
+#
+# The bug that shipped: a name-matched dir was offered for permanent `rm` on the
+# strength of its BASENAME alone, so a tracked build/ of release scripts, a
+# committed dist/ or a vendored Pods/ all looked like junk. Every mutation here
+# puts some version of that back.
+
+check_mutation 'name match alone is enough (proof not consulted)' test_ignored_proof.sh \
+    's|                      if (d in I) { print; next }|                      if (1) { print; next }|'
+
+check_mutation 'the proof accepts nothing (all project junk lost)' test_ignored_proof.sh \
+    's|                      if (d in I) { print; next }|                      if (0) { print; next }|'
+
+# Only exact hits count. `git ls-files --directory` collapses a wholly ignored
+# tree to one entry, so a dist/ inside one is never named — this drops it.
+check_mutation 'proof stops walking to the collapsed ancestor' test_ignored_proof.sh \
+    's|                      sub(/\\/\[^\\/\]\*\$/, "", d)|                      break|'
+
+# The walk must end AT the candidate's own repo root. Past it, an outer repo
+# that ignores a nested checkout authorizes deleting what that checkout tracks.
+check_mutation 'proof walks past the repo root into the enclosing repo' test_ignored_proof.sh \
+    's|while (d != \$1 && d != "" && d != "/")|while (d != "" \&\& d != "/")|'
+
+# The proof is read from a listing keyed by repo; feeding the walk the repo
+# roots instead of the ignored paths makes it match nothing real.
+check_mutation 'proof indexes the repo column instead of the ignored path' test_ignored_proof.sh \
+    's|if (split(l, a, FS) >= 2) I\[a\[2\]\] = 1|if (split(l, a, FS) >= 2) I[a[1]] = 1|'
+
+# The git pass must run for candidate-holding repos even when the git-ignored
+# category is off — that is the only source of proof in a -p scan without it.
+check_mutation 'the git pass only runs when the git-ignored category is on' test_ignored_proof.sh \
+    "s|        awk -F \"\$us\" 'NF { print \$1 }' \"\$cands\"|        :|"
+
 # ---- category model --------------------------------------------------------
 
 check_mutation 'prune_zero drops CAT_METHOD from the compaction' test_categories.sh \

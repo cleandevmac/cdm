@@ -70,7 +70,8 @@ ${YELLOW}What it cleans (all described by editable JSON pattern files):${NC}
   • Developer caches & build artifacts (Xcode, Go, Node, Gradle, Cargo, ...).
   • Electron / browser / application caches.
   • Project junk in your repos, grouped per project (node_modules, dist, build,
-    target, git-ignored) — pick exactly which repos to clean.
+    target, git-ignored) — pick exactly which repos to clean. Only ever what
+    your repo already git-ignores; a tracked build/ or dist/ is left alone.
   • Leftover data from apps you have uninstalled (moved to Trash, recoverable).
 
 ${YELLOW}Safety:${NC}
@@ -720,7 +721,7 @@ flush_project_category() {
         fi
     fi
     add_category "📁" "$disp" \
-        "Project junk in ${rel}: ${summary}. Regenerable build/dependency dirs are deleted; other git-ignored items (e.g. local config, logs) go to the Trash (recoverable); .env* files are always left alone." \
+        "Project junk in ${rel}: ${summary}. Everything here is git-ignored: regenerable build/dependency dirs are deleted; other ignored items (e.g. local config, logs) go to the Trash (recoverable); .env* files are always left alone." \
         "project" 0 "$paths" "$pmethods"
     CAT_SUMMARY[$((N - 1))]="$summary"
 }
@@ -829,39 +830,83 @@ EOF
     # are US-separated (\x1f) — not a path character — so paths with spaces are
     # safe. git ls-files -z is NUL-delimited so its output needs no quoting.
     local us=$'\x1f' pairs="$SCAN_DIR/proj_pairs"; : > "$pairs"
-    local p m key
-    # a) Name-matched regenerable dirs — only those inside a git repo (skip
-    #    tool/language caches that merely contain a dir with a matching name).
+    local p m key rel repo_i
+
+    # Candidate name-matched dirs: inside a git repo (skip tool/language caches
+    # that merely contain a dir with a matching name), and nothing more yet — a
+    # matching NAME is not evidence the directory is regenerable, so each one
+    # still has to be proven git-ignored below.
+    # see docs/DESIGN.md#ignored-proof
+    local cands="$SCAN_DIR/proj_cands"; : > "$cands"
     while IFS= read -r p; do
         [ -n "$p" ] || continue
         key=$(project_key "$p"); [ -n "$key" ] || continue
+        printf '%s%s%s\n' "$key" "$us" "$p" >> "$cands"
+    done < "$junk_file"
+
+    # One git pass per repo lists everything git ignores in it, collapsed to the
+    # outermost ignored directory by --directory. It feeds BOTH offers below, so
+    # no repo is walked twice. Candidate-holding repos come first so that when
+    # SCAN_MAXREPOS cuts the list short, it sheds repos with nothing name-matched
+    # to lose. Repos past the cap (or without git) yield nothing and so offer
+    # nothing — unproven is treated as not-junk.
+    local ignf="$SCAN_DIR/proj_ignored"; : > "$ignf"
+    local reposcan="$SCAN_DIR/proj_gitrepos"
+    {
+        awk -F "$us" 'NF { print $1 }' "$cands"
+        if [ "$GI_ON" -eq 1 ]; then
+            repo_i=0
+            while [ "$repo_i" -lt "${#REPO_ROOTS[@]}" ]; do
+                printf '%s\n' "${REPO_ROOTS[$repo_i]}"; repo_i=$((repo_i + 1))
+            done
+        fi
+    } | awk 'NF && !seen[$0]++' > "$reposcan"
+    local count=0
+    while IFS= read -r repo; do
+        [ -n "$repo" ] || continue
+        [ "$count" -ge "$SCAN_MAXREPOS" ] && break
+        count=$((count + 1))
+        while IFS= read -r -d '' rel; do
+            rel="${rel%/}"
+            [ -n "$rel" ] || continue
+            printf '%s%s%s\n' "$repo" "$us" "$repo/$rel" >> "$ignf"
+        done < <(cd "$repo" 2>/dev/null && git -c core.quotePath=false ls-files -z --others --ignored --exclude-standard --directory 2>/dev/null)
+    done < "$reposcan"
+
+    # a) Name-matched regenerable dirs that git confirms are ignored — the item
+    #    itself, or an ancestor BELOW its own repo root that --directory
+    #    collapsed. A tracked dist/ or a hand-written build/ never appears in
+    #    that listing. The walk stops before the repo root because an enclosing
+    #    repo that ignores a nested checkout must not authorize deleting what
+    #    that checkout tracks.
+    while IFS="$us" read -r key p; do
+        [ -n "$p" ] || continue
         bn="${p##*/}"; m=$(classify_method "$bn"); [ -n "$m" ] || m="rm"
         printf '%s%s%s%s%s\n' "$key" "$us" "$m" "$us" "$p" >> "$pairs"
-    done < "$junk_file"
+    done < <(awk -F "$us" -v ign="$ignf" '
+        BEGIN { while ((getline l < ign) > 0) if (split(l, a, FS) >= 2) I[a[2]] = 1 }
+        NF >= 2 { d = $2
+                  while (d != $1 && d != "" && d != "/") {
+                      if (d in I) { print; next }
+                      sub(/\/[^\/]*$/, "", d)
+                  } }' "$cands")
     # b) Git-ignored entries, tied to the repo they came from.
-    if [ "$GI_ON" -eq 1 ] && [ "${#REPO_ROOTS[@]}" -gt 0 ]; then
-        local count=0 rel ri=0
-        while [ "$ri" -lt "${#REPO_ROOTS[@]}" ]; do
-            repo="${REPO_ROOTS[$ri]}"; ri=$((ri + 1))
-            [ "$count" -ge "$SCAN_MAXREPOS" ] && break
-            count=$((count + 1))
-            while IFS= read -r -d '' rel; do
-                rel="${rel%/}"
-                [ -n "$rel" ] || continue
-                p="$repo/$rel"; bn="${p##*/}"
-                # Never offer .env* for deletion. These hold secrets and local
-                # config that no rebuild restores, and being git-ignored — the
-                # very reason they surface here — is exactly how a project keeps
-                # them off version control, so a listed one is unrecoverable if
-                # trashed. Over-matching only skips a cleanup, never deletes
-                # wrongly; the name-matched pass above needs no such guard, as
-                # its names come from the rules and none start with .env.
-                # see docs/DESIGN.md#env-file-exception
-                case "$bn" in .env*) continue ;; esac
-                m=$(classify_method "$bn"); [ -n "$m" ] || m="$GI_METHOD"
-                printf '%s%s%s%s%s\n' "$repo" "$us" "$m" "$us" "$p" >> "$pairs"
-            done < <(cd "$repo" 2>/dev/null && git -c core.quotePath=false ls-files -z --others --ignored --exclude-standard --directory 2>/dev/null)
-        done
+    if [ "$GI_ON" -eq 1 ]; then
+        while IFS="$us" read -r repo p; do
+            [ -n "$p" ] || continue
+            bn="${p##*/}"
+            # Never offer .env* for deletion. These hold secrets and local
+            # config that no rebuild restores, and being git-ignored — the
+            # very reason they surface here — is exactly how a project keeps
+            # them off version control, so a listed one is unrecoverable if
+            # trashed. Over-matching only skips a cleanup, never deletes
+            # wrongly; the name-matched pass above needs no such guard, as
+            # its names come from the rules and none start with .env.
+            # see docs/DESIGN.md#env-file-exception
+            case "$bn" in .env*) continue ;; esac
+            m=$(classify_method "$bn"); [ -n "$m" ] || m="$GI_METHOD"
+            printf '%s%s%s%s%s\n' "$repo" "$us" "$m" "$us" "$p" >> "$pairs"
+        done < "$ignf"
     fi
     [ -s "$pairs" ] || return 0
 
