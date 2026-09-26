@@ -504,7 +504,7 @@ check_mutation 'parser ignores PROC records' test_running_apps.sh \
     's|            PROC) cprocs="\${cprocs:+\$cprocs|            ZZPROC) cprocs="${cprocs:+$cprocs|'
 
 check_mutation 'cprocs not reset per category (procs leak to the next rule)' test_running_apps.sh \
-    's|have=1; cpaths=""; cdirs=""; cengines=""; cprocs="" ;;|have=1; cpaths=""; cdirs=""; cengines="" ;;|'
+    's|have=1; cpaths=""; cdirs=""; cengines=""; cprocs=""; cimages="" ;;|have=1; cpaths=""; cdirs=""; cengines=""; cimages="" ;;|'
 
 check_mutation 'register_paths drops procs on the way to add_category' test_running_apps.sh \
     's|"\$default" "\$found" "" "\$procs"|"$default" "$found" ""|'
@@ -520,6 +520,35 @@ check_mutation 'unselected categories are probed too' test_running_apps.sh \
 
 check_mutation 'pgrep loses -x (Google Chrome Helper would match)' test_running_apps.sh \
     's|pgrep -xq "\$name"|pgrep -q "$name"|'
+
+# ---- android-images: never offer an image an AVD still boots from ----------
+
+check_mutation 'register_paths ignores its skip list' test_android_images.sh \
+    's|            \[ -n "\$skip" \] \&\& ends_with_any "\$m" "\$skip" \&\& { IFS=; continue; }||'
+
+check_mutation 'android-images passes no AVD refs' test_android_images.sh \
+    's|"\$cprocs" "\$(avd_image_refs)" ;;|"$cprocs" ;;|'
+
+check_mutation 'android-images kind unrecognised (falls to paths)' test_android_images.sh \
+    's|^        android-images)$|        zz-android-images)|'
+
+check_mutation 'parser ignores IMG records' test_android_images.sh \
+    's|            IMG) cimages=|            ZZIMG) cimages=|'
+
+check_mutation 'JXA stops emitting IMG records' test_android_images.sh \
+    "s@(c.images  || \[\]).forEach(function(p){ out.push(tab('IMG', p)); });@@"
+
+check_mutation 'image.sysdir trailing slash kept (ref never matches)' test_android_images.sh \
+    's@\*" "|\*/) v="\${v%?}" ;;@*" ") v="${v%?}" ;;@'
+
+check_mutation 'AVD <name>.ini path= ignored (AVD outside avd home)' test_android_images.sh \
+    's|path=\*) line="\${line#path=}"|zzpath=*) line="${line#path=}"|'
+
+check_mutation 'ANDROID_AVD_HOME ignored' test_android_images.sh \
+    's|for home in "\${ANDROID_AVD_HOME:-}" |for home in |'
+
+check_mutation 'ends_with_any drops the / boundary' test_android_images.sh \
+    's@case "\$1" in "\$r"|\*/"\$r") return 0@case "$1" in *"$r") return 0@'
 
 echo
 printf 'mutations: %d, survived (holes in the tests): %d\n' "$total" "$survived"

@@ -7,7 +7,7 @@
       "name": "Electron / Chromium app caches",
       "method": "rm",
       "default": true,
-      "desc": "Disk/GPU/code caches inside Electron apps (VS Code, Claude, Slack, ...) — rebuilt on launch.",
+      "desc": "Disk/GPU/code caches inside Electron apps (VS Code, Claude, Slack, ...) and their per-webview partitions (e.g. one per Claude Code preview) — rebuilt on launch. Cookies & local storage are kept.",
       "procs": [
         "Code", "Claude", "Slack", "Discord", "Notion",
         "Figma", "Obsidian", "Postman", "Spotify"
@@ -28,7 +28,14 @@
         "~/Library/Application Support/*/Service Worker/CacheStorage",
         "~/Library/Application Support/*/WebStorage/*/CacheStorage",
         "~/Library/Application Support/*/Crashpad/completed",
+        "~/Library/Application Support/*/Shared Dictionary",
         "~/Library/Application Support/*/Partitions/*/Cache",
+        "~/Library/Application Support/*/Partitions/*/Code Cache",
+        "~/Library/Application Support/*/Partitions/*/GPUCache",
+        "~/Library/Application Support/*/Partitions/*/DawnWebGPUCache",
+        "~/Library/Application Support/*/Partitions/*/DawnGraphiteCache",
+        "~/Library/Application Support/*/Partitions/*/Shared Dictionary",
+        "~/Library/Application Support/*/Partitions/*/Service Worker/CacheStorage",
         "~/Library/Application Support/*/component_crx_cache",
         "~/Library/Application Support/*/extensions_crx_cache",
         "~/Library/Application Support/*/logs"
@@ -146,6 +153,26 @@
       ]
     },
     {
+      "icon": "📀",
+      "name": "Claude desktop VM image",
+      "method": "rm",
+      "default": false,
+      "procs": ["Claude"],
+      "desc": "The Linux VM image Claude desktop runs Cowork / local agent sessions in (~10 GB unpacked) — re-downloaded (~1.2 GB) the next time you use them. Your VM session data (sessiondata.img) is kept.",
+      "paths": [
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/rootfs.img",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/.rootfs.img.origin",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/vmlinuz",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/.vmlinuz.origin",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/initrd",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/.initrd.origin",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/initrd-micro",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/.initrd-micro.origin",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/*.partial",
+        "~/Library/Application Support/Claude/vm_bundles/.wvm-tmp-*"
+      ]
+    },
+    {
       "icon": "📡",
       "name": "Crash-reporter & telemetry SDK caches",
       "method": "rm",
@@ -153,6 +180,7 @@
       "desc": "Queued crash/analytics payloads & updater caches dropped by embedded SDKs (Sentry, Crashlytics, Sparkle, Keystone, Segment, ...) — regenerated as needed.",
       "paths": [
         "~/Library/Caches/SentryCrash",
+        "~/Library/Caches/io.sentry",
         "~/Library/Caches/KSCrash",
         "~/Library/Caches/com.crashlytics",
         "~/Library/Caches/com.crashlytics.data",
@@ -172,9 +200,12 @@
       "name": "App updater staging caches",
       "method": "rm",
       "default": true,
-      "desc": "Downloaded update payloads left behind by Squirrel/Sparkle & Google's updater after installing — re-fetched only if an update is pending.",
+      "desc": "Downloaded update payloads left behind by Squirrel/Sparkle, electron-updater & Google's updater after installing — re-fetched only if an update is pending.",
       "paths": [
         "~/Library/Caches/*.ShipIt",
+        "~/Library/Caches/*-updater/pending",
+        "~/Library/Caches/com.google.antigravity/pending",
+        "~/Library/Caches/com.google.antigravity/update.zip",
         "~/Library/Application Support/Google/GoogleUpdater/*.old",
         "~/Library/Application Support/Caches/*.ShipIt"
       ]

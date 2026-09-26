@@ -124,12 +124,15 @@
       "name": "Gradle user cache",
       "method": "rm",
       "default": true,
-      "desc": "Gradle downloaded dependencies, build cache & daemon state in ~/.gradle — re-fetched on build. Stop the Gradle daemon first if one is running.",
+      "desc": "Gradle downloaded dependencies, wrapper distributions, build cache & daemon state in ~/.gradle — re-fetched on build. Stop the Gradle daemon first if one is running.",
       "paths": [
         "~/.gradle/caches",
         "~/.gradle/daemon",
         "~/.gradle/workers",
-        "~/.gradle/notifications"
+        "~/.gradle/notifications",
+        "~/.gradle/wrapper/dists",
+        "~/.gradle/.tmp",
+        "~/.gradle/kotlin-profile"
       ]
     },
     {
@@ -168,6 +171,17 @@
         "~/.cargo/git",
         "~/.rustup/downloads",
         "~/.rustup/tmp"
+      ]
+    },
+    {
+      "icon": "🦀",
+      "name": "sccache compile cache",
+      "method": "rm",
+      "default": true,
+      "desc": "sccache's shared Rust/C compilation cache — rebuilt on next build. Project target/ dirs are offered per repo by the project scan.",
+      "paths": [
+        "~/Library/Caches/Mozilla.sccache",
+        "~/.cache/sccache"
       ]
     },
     {
@@ -440,11 +454,39 @@
       "name": "Android build caches",
       "method": "rm",
       "default": false,
-      "desc": "Android SDK/Gradle & Android Studio transient caches — rebuilt by the toolchain.",
+      "desc": "Android SDK/Gradle & Android Studio transient caches, logs and interrupted SDK downloads — rebuilt by the toolchain.",
       "paths": [
         "~/.android/cache",
         "~/.android/build-cache",
-        "~/Library/Caches/Google/AndroidStudio*"
+        "~/Library/Caches/Google/AndroidStudio*",
+        "~/Library/Logs/Google/AndroidStudio*",
+        "~/Library/Android/sdk/.temp",
+        "~/Library/Android/sdk/.downloadIntermediates",
+        "~/Android/Sdk/.temp",
+        "~/Android/Sdk/.downloadIntermediates"
+      ]
+    },
+    {
+      "icon": "📲",
+      "name": "Android emulator snapshots",
+      "method": "rm",
+      "default": false,
+      "procs": ["qemu-system-aarch64", "qemu-system-x86_64"],
+      "desc": "Quick-boot snapshots of your AVDs — the next launch cold-boots and saves a fresh one. Apps & data installed in the AVD are kept.",
+      "paths": [
+        "~/.android/avd/*.avd/snapshots"
+      ]
+    },
+    {
+      "kind": "android-images",
+      "icon": "💿",
+      "name": "Unused Android system images",
+      "method": "rm",
+      "default": false,
+      "desc": "Emulator OS images (GBs each) that NO AVD on this Mac boots from — images an AVD still uses are never listed. Re-install from Android Studio's SDK Manager or 'sdkmanager' if you create an AVD with one later.",
+      "images": [
+        "~/Library/Android/sdk/system-images/*/*/*",
+        "~/Android/Sdk/system-images/*/*/*"
       ]
     },
     {

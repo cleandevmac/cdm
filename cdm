@@ -387,6 +387,7 @@ function run(argv) {
     (c.dirs    || []).forEach(function(d){ out.push(tab('D', d)); });
     (c.engines || []).forEach(function(e){ out.push(tab('E', e)); });
     (c.procs   || []).forEach(function(p){ out.push(tab('PROC', p)); });
+    (c.images  || []).forEach(function(p){ out.push(tab('IMG', p)); });
   });
   (o.patternFiles    || []).forEach(function(f){ out.push(tab('FILE', f)); });
   if (o.orphanConfig) out.push(tab('ORPHAN', o.orphanConfig));
@@ -429,10 +430,65 @@ add_category() { # icon name desc method default paths [pmethods] [procs]
     CAT_SEL[$N]="$5"; CAT_KB[$N]=0; N=$((N + 1))
 }
 
+# ends_with_any <path> <list> — true when <path> equals, or ends in /<entry> for,
+# any line of the newline-separated <list>.
+ends_with_any() {
+    local r
+    while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        case "$1" in "$r"|*/"$r") return 0 ;; esac
+    done <<EOF
+$2
+EOF
+    return 1
+}
+
+# avd_configs — every AVD's config.ini, one per line: <avd-home>/*.avd/config.ini
+# plus wherever each <avd-home>/<name>.ini's path= points (an AVD may live elsewhere).
+avd_configs() {
+    local home f line seen=""
+    for home in "${ANDROID_AVD_HOME:-}" "${ANDROID_USER_HOME:-$HOME/.android}/avd" "$HOME/.android/avd"; do
+        [ -n "$home" ] && [ -d "$home" ] || continue
+        case "$seen" in *"|$home|"*) continue ;; esac
+        seen="$seen|$home|"
+        for f in "$home"/*.avd/config.ini; do [ -f "$f" ] && printf '%s\n' "$f"; done
+        for f in "$home"/*.ini; do
+            [ -f "$f" ] || continue
+            while IFS= read -r line || [ -n "$line" ]; do
+                case "$line" in
+                    path=*) line="${line#path=}"; line="${line%$'\r'}"
+                            [ -f "$line/config.ini" ] && printf '%s\n' "$line/config.ini" ;;
+                esac
+            done < "$f"
+        done
+    done
+}
+
+# avd_image_refs — the system-image dirs some AVD boots from (each config.ini's
+# image.sysdir.N, SDK-relative), one per line with the trailing slash stripped.
+# see docs/DESIGN.md#android-images
+avd_image_refs() {
+    local cfg line v
+    while IFS= read -r cfg; do
+        [ -n "$cfg" ] || continue
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+                image.sysdir.*=*)
+                    v="${line#*=}"; v="${v%$'\r'}"
+                    while :; do case "$v" in " "*) v="${v# }" ;; *" "|*/) v="${v%?}" ;; *) break ;; esac; done
+                    [ -n "$v" ] && printf '%s\n' "$v" ;;
+            esac
+        done < "$cfg"
+    done <<EOF
+$(avd_configs)
+EOF
+}
+
 # register_paths — expand a newline-separated path list (~ and * globs) into the
 # concrete, existing, non-empty, de-duplicated paths, then add the category.
+# [skip] is a list for ends_with_any: a match it names is left out.
 register_paths() {
-    local icon="$1" name="$2" method="$3" default="$4" desc="$5" pathlist="$6" procs="${7:-}"
+    local icon="$1" name="$2" method="$3" default="$4" desc="$5" pathlist="$6" procs="${7:-}" skip="${8:-}"
     local found="" pat m
     while IFS= read -r pat; do
         [ -n "$pat" ] || continue
@@ -446,6 +502,7 @@ register_paths() {
             IFS="$__ifs"
             [ -e "$m" ] || { IFS=; continue; }
             is_nonempty "$m" || { IFS=; continue; }
+            [ -n "$skip" ] && ends_with_any "$m" "$skip" && { IFS=; continue; }
             case "
 $found
 " in *"
@@ -588,6 +645,11 @@ flush_pattern_category() {
             CONT_ICON[$CONT_N]="$cicon"; CONT_NAME[$CONT_N]="$cname"
             CONT_METHOD[$CONT_N]="$cmethod"; CONT_DEFAULT[$CONT_N]="$cdefault"
             CONT_DESC[$CONT_N]="$cdesc"; CONT_ENGINES[$CONT_N]="$cengines"; CONT_N=$((CONT_N + 1)) ;;
+        android-images)
+            # Candidates come from "images", never "paths", so an older cdm that
+            # does not know this kind registers nothing rather than every image.
+            # see docs/DESIGN.md#android-images
+            register_paths "$cicon" "$cname" "$cmethod" "$cdefault" "$cdesc" "$cimages" "$cprocs" "$(avd_image_refs)" ;;
         *)
             register_paths "$cicon" "$cname" "$cmethod" "$cdefault" "$cdesc" "$cpaths" "$cprocs" ;;
     esac
@@ -599,7 +661,7 @@ flush_pattern_category() {
 # split) because the C header line carries 6 tab-separated fields of its own.
 parse_pattern_stream() {
     local file="$1"
-    local ckind="" cicon="" cname="" cmethod="" cdefault="" cdesc="" cpaths="" cdirs="" cengines="" cprocs="" have=0
+    local ckind="" cicon="" cname="" cmethod="" cdefault="" cdesc="" cpaths="" cdirs="" cengines="" cprocs="" cimages="" have=0
     local line typ rest us=$'\x1f'
     while IFS= read -r line; do
         typ="${line%%$us*}"       # text before the first US separator
@@ -616,7 +678,7 @@ parse_pattern_stream() {
                 IFS=$us read -r ckind cicon cname cmethod cdefault cdesc <<EOF
 $rest
 EOF
-                have=1; cpaths=""; cdirs=""; cengines=""; cprocs="" ;;
+                have=1; cpaths=""; cdirs=""; cengines=""; cprocs=""; cimages="" ;;
             P) cpaths="${cpaths:+$cpaths
 }$rest" ;;
             D) cdirs="${cdirs:+$cdirs
@@ -624,6 +686,8 @@ EOF
             E) cengines="${cengines:+$cengines
 }$rest" ;;
             PROC) cprocs="${cprocs:+$cprocs
+}$rest" ;;
+            IMG) cimages="${cimages:+$cimages
 }$rest" ;;
         esac
     done < <(parse_json_file "$file")

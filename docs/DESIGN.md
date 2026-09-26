@@ -294,6 +294,7 @@ Records are newline-separated. Field layout per record type:
   C<US>kind<US>icon<US>name<US>method<US>default<US>desc            (category)
   P<US>path | D<US>dirname | E<US>engine                           (paths / dirs / engines)
   PROC<US>process-name                                             (running-app check)
+  IMG<US>glob                                                      (android-images candidates)
   L<US>path<US>strip | SKIP<US>prefix | SHARED<US>id                (orphan config)
   FILE<US>name | ORPHAN<US>name | ERR<US>message
 ---------------------------------------------------------------------------
@@ -330,6 +331,36 @@ this safe to drive from data. "Google Chrome" does not match the several
 entry naming an app that does not exist simply never matches. So a bad `procs`
 entry costs a *missing* warning, never a false one — the failure is always
 toward silence, never toward nagging.
+
+<a id="android-images"></a>
+## Unused Android system images
+
+An emulator system image is 3–8 GB, and it leaks in the most ordinary way:
+create an AVD, delete it months later, and the image it booted from stays in
+the SDK forever. Nothing in Android Studio points that out. But an image an
+AVD *still* boots from is not junk — delete it and that emulator no longer
+starts until the image is reinstalled. A plain glob over `system-images/*/*/*`
+cannot tell the two apart, and the menu selects whole categories, not paths,
+so lumping them into one row would force the user to take both or neither.
+
+So the `android-images` kind splits the job. The rule supplies the candidate
+globs; `avd_image_refs` reads every AVD's `config.ini` and collects each
+`image.sysdir.N` (SDK-relative, written with a trailing slash — stripped, or
+no ref ever matches); and `register_paths` drops every candidate that
+`ends_with_any` of those refs. The match is on a `/` boundary so a ref never
+matches mid-component. AVDs are found both as `<avd-home>/*.avd/config.ini`
+and through each `<avd-home>/<name>.ini`'s `path=`, because an AVD can live
+outside its home; `$ANDROID_AVD_HOME` and `$ANDROID_USER_HOME` are honoured
+on top of `~/.android/avd`. Reading more places only ever *keeps* more
+images — the failure is toward offering less, never toward offering an image
+in use.
+
+The candidates travel in `images`, deliberately **not** `paths`. Rules are
+fetched from raw `main`, so an older saved copy of `cdm` will meet this rule.
+It does not know the kind, falls through to plain `register_paths` on
+`paths` — and, were the globs there, would offer every image including the
+ones in use. With them in a field it has never heard of, it registers
+nothing. `tests/test_android_images.sh` pins that fallback too.
 
 <a id="glob-expansion"></a>
 ## Glob expansion in register_paths

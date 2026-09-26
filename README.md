@@ -48,9 +48,9 @@ Make sure `~/.local/bin` is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH
 
 ## What it cleans
 
-**1. Dev caches & build artifacts** — Xcode DerivedData and DeviceSupport, Go build & module cache, npm/npx/pnpm/yarn, JS build tools (Turbo, Vite, webpack, Parcel, ESLint), Gradle, Maven, sbt/Ivy, Cargo, Python (pip, uv, poetry, ruff, mypy), Ruby/Bundler, Bun, Deno, CocoaPods, SwiftPM, Composer, Bazel, Zig, cloud CLIs (kubectl, AWS, gcloud, Azure), Docker buildx, JetBrains, Playwright, and the Homebrew download cache.
+**1. Dev caches & build artifacts** — Xcode DerivedData and DeviceSupport, Go build & module cache, npm/npx/pnpm/yarn, JS build tools (Turbo, Vite, webpack, Parcel, ESLint), Gradle, Maven, sbt/Ivy, Cargo, Python (pip, uv, poetry, ruff, mypy), Ruby/Bundler, Bun, Deno, CocoaPods, SwiftPM, Composer, Bazel, Zig, cloud CLIs (kubectl, AWS, gcloud, Azure), Docker buildx, JetBrains, Playwright, the Homebrew download cache, Android Studio caches and emulator snapshots, and Android system images no AVD uses any more.
 
-**2. Electron, browser & app caches** — VS Code, Claude, Slack; Chrome, Brave, Edge, Vivaldi and Arc scanned per browser profile; Firefox; and crash/telemetry SDK caches (Sentry, Crashlytics, Sparkle).
+**2. Electron, browser & app caches** — VS Code, Claude (including per-preview webview caches and, opt-in, the Cowork VM image), Slack; Chrome, Brave, Edge, Vivaldi and Arc scanned per browser profile; Firefox; and crash/telemetry SDK caches (Sentry, Crashlytics, Sparkle).
 
 **3. Project junk, grouped per repo** — `node_modules`, `dist`, `build`, `target`, `__pycache__`, and git-ignored files. Only ever what the repo itself git-ignores. Off by default; pass `-p` to enable it. Interactive runs offer it after the cache scan finishes.
 

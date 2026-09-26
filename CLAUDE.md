@@ -109,6 +109,9 @@ A category object is `icon`, `name`, `desc`, `method`, `default`, `paths`, and o
   for VS Code. An unknown name never matches, so a wrong entry costs a missing warning, never a
   false one. This is the *only* place app names live; adding a browser is a JSON edit, and
   deliberately so. See `docs/DESIGN.md#running-app-check`.
+- `kind: "android-images"` — takes its globs from `images`, not `paths`, and drops any image an
+  AVD's `config.ini` still boots from. Candidates live in a field older scripts ignore so a stale
+  `cdm` offers nothing rather than every image. See `docs/DESIGN.md#android-images`.
 
 Note the on-disk names are `name`/`method`/`default`, not `label`/`disposition`/`safe`. If you are
 writing docs, read a rule file first — this has been documented wrong before.
