@@ -261,13 +261,13 @@ check_mutation 'clip_plain off-by-one leaves no room for ellipsis' test_text_wid
     's|\[ \$((w + _CW)) -gt \$((max - 1)) \] && break|[ $((w + _CW)) -gt $max ] \&\& break|'
 
 check_mutation 'shorten_left clips from the right instead' test_text_width.sh \
-    's|else printf .…%s. "\${s:\$((\${#s} - max + 1))}"; fi|else printf "…%s" "${s:0:$((max - 1))}"; fi|'
+    's|else _CLIP="…\${s:\$((\${#s} - max + 1))}"; fi|else _CLIP="…${s:0:$((max - 1))}"; fi|'
 
 # The ${s: -0} defect, which the dead fast path below masked for the life of the
 # tool: -0 is not negative, so bash reads it as offset 0 and returns the whole
 # string. Only reachable — and so only catchable — now that the guard works.
 check_mutation 'shorten_left fast path regains the ${s: -0} defect' test_text_width.sh \
-    's|else printf .…%s. "\${s:\$((\${#s} - max + 1))}"; fi|else printf "…%s" "${s: -$((max - 1))}"; fi|'
+    's|else _CLIP="…\${s:\$((\${#s} - max + 1))}"; fi|else _CLIP="…${s: -$((max - 1))}"; fi|'
 
 # The guard is a character CLASS, never a bracket range. The first of these is
 # the bug that shipped: a range is resolved by LC_COLLATE, cdm pins only

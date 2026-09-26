@@ -200,6 +200,17 @@ human_kb() {
     elif [ "$kb" -ge 1024 ]; then LC_ALL=C awk "BEGIN{printf \"%.0f MB\", $kb/1024}"
     else echo "${kb} KB"; fi
 }
+# _hk <kb> — human_kb without the fork: sets _HK, memoized per value in a
+# variable named for it, since the menu formats the same sizes on every frame.
+# see docs/DESIGN.md#frame-cost
+_HK=""
+_hk() {
+    local kb=${1:-0} v
+    case "$kb" in ''|*[!0-9]*) _HK=$(human_kb "$kb"); return 0 ;; esac
+    v="_HKM_$kb"
+    [ -n "${!v:-}" ] || printf -v "$v" '%s' "$(human_kb "$kb")"
+    _HK=${!v}
+}
 
 # human_to_kb <size> — parse a Docker-style size ("1.8GB", "800MB", "0B",
 # "500kB", "2GiB") into whole KiB. Best-effort; unknown units yield 0.
@@ -667,19 +678,22 @@ project_key() {
 # which names the project) so the menu row stays aligned. <max> is display
 # columns, not characters — see dwidth; a path under ~/プロジェクト measures two
 # columns per character and would otherwise overrun the row it was budgeted.
-shorten_left() {
+shorten_left() { _shorten_left "$@"; printf '%s' "$_CLIP"; }
+# _shorten_left <str> <max> — the same, into _CLIP: the menu calls it per row, per frame.
+_CLIP=""
+_shorten_left() {
     local s="$1" max="$2"
-    [ "$max" -lt 1 ] && { printf ''; return; }
+    [ "$max" -lt 1 ] && { _CLIP=""; return 0; }
     # Fast path: no wide characters possible, so columns == characters. The tail is
     # taken by an offset from the LEFT, deliberately not ${s: -$((max - 1))}.
     # see docs/DESIGN.md#shorten-left-fast-path
     if is_ascii "$s"; then
-        if [ "${#s}" -le "$max" ]; then printf '%s' "$s"
-        else printf '…%s' "${s:$((${#s} - max + 1))}"; fi
+        if [ "${#s}" -le "$max" ]; then _CLIP="$s"
+        else _CLIP="…${s:$((${#s} - max + 1))}"; fi
         return 0
     fi
     dwidth "$s"
-    [ "$_DW" -le "$max" ] && { printf '%s' "$s"; return 0; }
+    [ "$_DW" -le "$max" ] && { _CLIP="$s"; return 0; }
     # Walk backwards, taking characters while they fit, leaving a column for the …
     local i=$((${#s} - 1)) w=0 out=""
     while [ "$i" -ge 0 ]; do
@@ -687,7 +701,7 @@ shorten_left() {
         [ $((w + _CW)) -gt $((max - 1)) ] && break
         out="${s:$i:1}$out"; w=$((w + _CW)); i=$((i - 1))
     done
-    printf '…%s' "$out"
+    _CLIP="…$out"
 }
 
 # flush_project_category <key> <paths> <pmethods> <basenames> — register one
@@ -1271,6 +1285,15 @@ term_cols() {
     case "$n" in ''|0|*[!0-9]*) n=80 ;; esac
     printf '%s' "$n"
 }
+# term_size — refresh TERM_ROWS/TERM_COLS, but only when SIZE_STALE says the
+# window may have changed (at start, and on every SIGWINCH). Asking stty costs
+# forks, and the menu repaints on every keypress. see docs/DESIGN.md#frame-cost
+SIZE_STALE=1; TERM_ROWS=24; TERM_COLS=80
+term_size() {
+    [ "$SIZE_STALE" = 1 ] || return 0
+    SIZE_STALE=0
+    TERM_ROWS=$(term_rows); TERM_COLS=$(term_cols)
+}
 
 # Display columns, which are not characters: CJK, Kana, Hangul and emoji take TWO.
 #
@@ -1310,17 +1333,19 @@ dwidth() {
 # columns, appending an ellipsis when it was shortened. Used for the unbounded
 # fields (row summary, item description) so a long value can never wrap onto a
 # second physical line and throw off the fixed-height layout.
-clip_plain() {
+clip_plain() { _clip_plain "$@"; printf '%s' "$_CLIP"; }
+# _clip_plain <text> <max> — the same, into _CLIP: the menu calls it per row, per frame.
+_clip_plain() {
     local s="$1" max="$2"
-    [ "$max" -lt 1 ] && { printf ''; return; }
+    [ "$max" -lt 1 ] && { _CLIP=""; return 0; }
     # Fast path: no wide characters possible, so columns == characters.
     if is_ascii "$s"; then
-        if [ "${#s}" -le "$max" ]; then printf '%s' "$s"
-        else printf '%s…' "${s:0:$((max - 1))}"; fi
+        if [ "${#s}" -le "$max" ]; then _CLIP="$s"
+        else _CLIP="${s:0:$((max - 1))}…"; fi
         return 0
     fi
     dwidth "$s"
-    [ "$_DW" -le "$max" ] && { printf '%s' "$s"; return 0; }
+    [ "$_DW" -le "$max" ] && { _CLIP="$s"; return 0; }
     # Take characters while they fit, leaving one column for the ellipsis.
     local i=0 w=0 out="" n=${#s}
     while [ "$i" -lt "$n" ]; do
@@ -1328,7 +1353,7 @@ clip_plain() {
         [ $((w + _CW)) -gt $((max - 1)) ] && break
         out="$out${s:$i:1}"; w=$((w + _CW)); i=$((i + 1))
     done
-    printf '%s…' "$out"
+    _CLIP="${out}…"
 }
 
 # _k_add <cap> <label> — append one "KEY label" pair to the line build_keys_line is
@@ -1381,12 +1406,20 @@ build_keys_line() {
 # wraps makes the frame taller than its budget and scrolls the screen on every
 # repaint. see docs/DESIGN.md#status-line
 build_status_line() {
-    local cols="$1" tier sel_c sel_h tot_h disk=""
-    sel_c=$(selected_count)
-    sel_h=$(human_kb "$(selected_kb)")
-    tot_h=$(human_kb "$(total_kb)")
-    [ "$DISK_TOTAL_KB" -gt 0 ] && \
-        disk="$(human_kb "$DISK_FREE_KB") free of $(human_kb "$DISK_TOTAL_KB")"
+    local cols="$1" tier sel_c=0 sel_kb=0 tot_kb=0 sel_h tot_h disk="" i=0
+    # Same sums as selected_count/selected_kb/total_kb, in-line: this runs every
+    # frame, and each of those costs a fork per call. see docs/DESIGN.md#frame-cost
+    while [ "$i" -lt "$N" ]; do
+        tot_kb=$((tot_kb + ${CAT_KB[$i]}))
+        [ "${CAT_SEL[$i]}" = "1" ] && { sel_c=$((sel_c + 1)); sel_kb=$((sel_kb + ${CAT_KB[$i]})); }
+        i=$((i + 1))
+    done
+    _hk "$sel_kb"; sel_h=$_HK
+    _hk "$tot_kb"; tot_h=$_HK
+    if [ "$DISK_TOTAL_KB" -gt 0 ]; then
+        _hk "$DISK_FREE_KB"; disk="$_HK free of "
+        _hk "$DISK_TOTAL_KB"; disk="$disk$_HK"
+    fi
     for tier in 1 2 3; do
         _SS="Selected ${BOLD}${sel_c}${NC}/${N}   Reclaimable ${BOLD}${GREEN}${sel_h}${NC}"
         _SP="Selected ${sel_c}/${N}   Reclaimable ${sel_h}"
@@ -1403,7 +1436,8 @@ build_status_line() {
 }
 
 render_menu() {
-    local rows cols; rows=$(term_rows); cols=$(term_cols)
+    term_size
+    local rows=$TERM_ROWS cols=$TERM_COLS
     case "$rows" in ''|*[!0-9]*) rows=24 ;; esac
     case "$cols" in ''|*[!0-9]*) cols=80 ;; esac
     # Chrome is title, status, keys, the two scroll hints and the description; every
@@ -1467,40 +1501,45 @@ render_menu() {
     if [ "$show_ind" -eq 1 ]; then
         if [ "$SCROLL" -gt 0 ]; then buf+="   ${DIM}↑ ${SCROLL} more above${NC}${K}${NL}"; else buf+="${K}${NL}"; fi
     fi
-    for i in $(seq "$SCROLL" "$last"); do
+    # Nothing in this loop forks: it runs once per visible row on every keypress,
+    # and one $(...) per row was a visible lag on ↑/↓. see docs/DESIGN.md#frame-cost
+    i=$SCROLL
+    while [ "$i" -le "$last" ]; do
         local box size nm line
         if [ "${CAT_SEL[$i]}" = "1" ]; then box="[${GREEN}✓${NC}]"; else box="[ ]"; fi
-        size=$(human_kb "${CAT_KB[$i]}")
+        _hk "${CAT_KB[$i]}"; size=$_HK
         # Clip the name to its column. Project rows are named by path, whose tail
         # identifies the row, so those clip from the left; every other name clips right.
         # see docs/DESIGN.md#name-clipping
-        if [ "${CAT_METHOD[$i]}" = "project" ]; then nm=$(shorten_left "${CAT_NAME[$i]}" "$name_w")
-        else nm=$(clip_plain "${CAT_NAME[$i]}" "$name_w"); fi
+        if [ "${CAT_METHOD[$i]}" = "project" ]; then _shorten_left "${CAT_NAME[$i]}" "$name_w"
+        else _clip_plain "${CAT_NAME[$i]}" "$name_w"; fi
+        nm=$_CLIP
         # Both clippers return at most name_w *columns*, so this never goes
         # negative. Pad by columns: printf's own %-Ns counts bytes, and ${#nm}
         # counts characters — neither is what the terminal actually lays out.
         dwidth "$nm"; local np=$((name_w - _DW)); [ "$np" -lt 0 ] && np=0
         # Data goes in as printf ARGUMENTS here, and $buf is printed with '%s'
         # below, so a name is never parsed as a format — no % or \ to neutralize.
-        line=$(printf '%s %s %s%s %10s' "$box" "${CAT_ICON[$i]}" "$nm" "${blanks:0:$np}" "$size")
+        printf -v line '%s %s %s%s %10s' "$box" "${CAT_ICON[$i]}" "$nm" "${blanks:0:$np}" "$size"
         # Per-project rows show a dim "what's inside" summary that fills the rest
         # of the line: the fixed columns above occupy 20 + name_w display cols, so
         # the summary takes the remainder and reaches — but never crosses — the
         # right edge, so it never wraps.
         local suf=""
         if [ -n "${CAT_SUMMARY[$i]}" ]; then
-            local s; s=$(clip_plain "${CAT_SUMMARY[$i]}" "$sum_w")
-            [ -n "$s" ] && suf="  ${DIM}${s}${NC}"
+            _clip_plain "${CAT_SUMMARY[$i]}" "$sum_w"
+            [ -n "$_CLIP" ] && suf="  ${DIM}${_CLIP}${NC}"
         fi
         if [ "$i" -eq "$CURSOR" ]; then buf+="${CYAN}❯ ${BOLD}${line}${NC}${suf}${K}${NL}"; else buf+="  ${line}${suf}${K}${NL}"; fi
+        i=$((i + 1))
     done
     if [ "$show_ind" -eq 1 ]; then
         if [ "$last" -lt $((N - 1)) ]; then buf+="   ${DIM}↓ $((N - 1 - last)) more below${NC}${K}${NL}"; else buf+="${K}${NL}"; fi
     fi
 
     if [ "$show_desc" -eq 1 ]; then
-        local desc; desc=$(clip_plain "${CAT_DESC[$CURSOR]}" $((cols - 1)))
-        buf+="${DIM}${desc}${NC}${K}${NL}"
+        _clip_plain "${CAT_DESC[$CURSOR]}" $((cols - 1))
+        buf+="${DIM}${_CLIP}${NC}${K}${NL}"
     fi
     # Drop the frame's final newline: on the terminal's bottom row a newline scrolls
     # the screen, dragging the title off the top on every frame.
@@ -1973,7 +2012,7 @@ fi
 # Redraw on terminal resize. SIGWINCH sets NEED_REDRAW and the read below polls
 # with a 1s timeout: bash 3.2's read does not return early when a signal fires.
 # see docs/DESIGN.md#resize-redraw
-trap 'NEED_REDRAW=1' WINCH
+trap 'NEED_REDRAW=1; SIZE_STALE=1' WINCH
 # Draw the menu on the alternate screen. It is a full-screen app that repaints on
 # every keypress, and on the normal screen each repaint left a copy behind in the
 # scrollback and wiped the user's terminal on the way out. The EXIT trap restores.

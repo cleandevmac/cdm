@@ -770,6 +770,33 @@ whole pile back into view.
 string a directory named `ha\nck` or `esc\033[41m` would inject newlines and
 escape sequences of its own. These two are constant formats with no data.
 
+<a id="frame-cost"></a>
+## A keypress must not fork
+
+Every ↑/↓ repaints the whole frame, so render_menu's cost *is* the cursor's
+latency. It used to fork per visible row: a `$(human_kb …)` (itself an awk),
+a `$(clip_plain …)` or `$(shorten_left …)`, a `$(printf …)`, plus `$(seq …)`
+for the loop, two `stty`+`awk` pairs for the window size, and a `$(cat_indices)`
+under each of selected_count/selected_kb/total_kb for the status row. On a
+45-row list that measured ~380ms a frame — a visibly sticky cursor, and held
+arrow keys queued up and kept scrolling after release.
+
+Now a frame forks nothing once warm (~19ms on the same list):
+
+- `_clip_plain` / `_shorten_left` return through `_CLIP`, the way dwidth returns
+  through `_DW`. `clip_plain` / `shorten_left` remain as printing wrappers for
+  callers outside the hot path, and for the tests.
+- `_hk` memoizes human_kb in a variable named for the value (`_HKM_<kb>`) —
+  bash 3.2 has no associative arrays, but indirect expansion does the same job.
+  human_kb stays the one formatter, so there is no second rounding rule to
+  drift from awk's `%.2f` (which rounds a binary value, not a decimal one).
+- `term_size` only re-asks stty when SIZE_STALE is set: at start, and by the
+  WINCH trap alongside NEED_REDRAW.
+- build_status_line sums the selection in-line, and rows print with `printf -v`.
+
+Keep it that way: any `$(...)` added to render_menu or the functions it calls
+costs one fork per row per keypress.
+
 <a id="wait-any-key"></a>
 ## wait_any_key
 
