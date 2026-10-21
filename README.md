@@ -66,7 +66,6 @@ Make sure `~/.local/bin` is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH
 - **Never touched regardless of what the rules say:** `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`, `~/.ssh`, and iCloud Drive. This guard sits below the rule engine — a rule cannot opt out of it.
 - **A folder is only project junk if your repo git-ignores it.** Matching a name like `dist`, `build` or `Pods` is not enough — cdm verifies with git that the directory is ignored *and* untracked, so a tracked `build/` of release scripts or a committed `dist/` is left alone.
 - **`.env*` files are never offered for deletion.** The project scan skips them even though they're git-ignored — they hold secrets and local config nothing regenerates.
-- **Another git checkout is never offered.** When a repo git-ignores a folder that holds a clone, a git worktree or a submodule (Claude Code keeps its worktrees in `.claude/worktrees`), cdm leaves that folder and everything in the other checkout alone.
 - **App sandboxes and Apple/system-owned data are never touched.**
 - The installed-app list is read from **LaunchServices**, so prefPanes, plugins and other non-`.app` bundles aren't mis-flagged as orphaned.
 - `--dry-run` deletes nothing.
