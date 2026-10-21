@@ -738,6 +738,42 @@ project_key() {
     printf ''
 }
 
+# is_checkout_marker <path-to-.git> — true when it makes its folder a git checkout:
+# a .git directory holding a HEAD, or the "gitdir: …" file of a worktree or submodule.
+# see docs/DESIGN.md#other-checkouts
+is_checkout_marker() {
+    if [ -d "$1" ]; then
+        [ -e "$1/HEAD" ]
+        return
+    fi
+    [ -f "$1" ] || return 1
+    local head=""
+    IFS= read -r head 2>/dev/null < "$1"
+    case "$head" in "gitdir: "*) return 0 ;; esac
+    return 1
+}
+
+# touches_other_checkout <path> <repo> — true when <path> holds a git checkout, or
+# sits inside one below <repo>, its own repo root. A folder find cannot read counts
+# as holding one. see docs/DESIGN.md#other-checkouts
+touches_other_checkout() {
+    local p="$1" repo="$2" d g list
+    d="${p%/*}"
+    while case "$d" in "$repo"/*) true ;; *) false ;; esac; do
+        is_checkout_marker "$d/.git" && return 0
+        d="${d%/*}"
+    done
+    [ -d "$p" ] || return 1
+    list=$(find "$p" -mindepth 1 -name .git -prune -print 2>/dev/null) || return 0
+    while IFS= read -r g; do
+        [ -n "$g" ] || continue
+        is_checkout_marker "$g" && return 0
+    done <<EOF
+$list
+EOF
+    return 1
+}
+
 # shorten_left <str> <max> — clip an over-long path from the LEFT (keep the tail,
 # which names the project) so the menu row stays aligned. <max> is display
 # columns, not characters — see dwidth; a path under ~/プロジェクト measures two
@@ -988,6 +1024,18 @@ EOF
     fi
     [ -s "$pairs" ] || return 0
 
+    # Never offer what holds another checkout, or sits inside one below its own repo:
+    # the find pass skips a worktree's .git FILE and pruned trees like .claude, while
+    # git lists an ignored folder whole, worktrees and nested clones included.
+    # see docs/DESIGN.md#other-checkouts
+    local safe="$SCAN_DIR/proj_safe"; : > "$safe"
+    while IFS="$us" read -r key m p; do
+        [ -n "$p" ] || continue
+        touches_other_checkout "$p" "$key" && continue
+        printf '%s%s%s%s%s\n' "$key" "$us" "$m" "$us" "$p" >> "$safe"
+    done < "$pairs"
+    [ -s "$safe" ] || return 0
+
     # De-duplicate and drop any item nested under another kept item; sorting by path
     # puts an ancestor immediately before its descendants. The same pass remaps each
     # surviving item's key (its repo root) onto the group root that encloses it, when
@@ -995,7 +1043,7 @@ EOF
     # one contiguous block for the final -k1,1 grouping sort.
     # see docs/DESIGN.md#dedup-nesting
     local sorted="$SCAN_DIR/proj_sorted"
-    LC_ALL=C sort -t "$us" -k3 "$pairs" \
+    LC_ALL=C sort -t "$us" -k3 "$safe" \
         | awk -F "$us" -v gpf="$gpfile" '
             BEGIN { OFS = FS; ng = 0; while ((getline l < gpf) > 0) if (l != "") G[++ng] = l }
             { if ($3==kept || (kept!="" && substr($3,1,length(kept)+1)==kept"/")) next

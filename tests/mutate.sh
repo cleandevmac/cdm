@@ -481,6 +481,46 @@ check_mutation 'repo count tallies items, not distinct repos (dedup dropped)' te
 check_mutation '.env* guard neutered (secrets offered for deletion)' test_env_exception.sh \
     's@case "\$bn" in \.env\*) continue ;; esac@case "$bn" in .envZNOMATCH*) continue ;; esac@'
 
+# ---- other checkouts (docs/DESIGN.md#other-checkouts) ------------------------
+#
+# The bug that shipped: a git-ignored folder holding a git worktree, a vendored
+# clone or a whole child repo was offered for the Trash, uncommitted work and
+# all, because git lists an ignored folder as one entry and the find pass never
+# saw the checkout inside. Each mutation puts one route back.
+
+check_mutation 'the checkout probe is never consulted' test_other_checkouts.sh \
+    's|        touches_other_checkout "\$p" "\$key" && continue|        false \&\& continue|'
+
+check_mutation 'the dedup pass reads the unprobed list' test_other_checkouts.sh \
+    's|LC_ALL=C sort -t "\$us" -k3 "\$safe"|LC_ALL=C sort -t "$us" -k3 "$pairs"|'
+
+# A worktree's or submodule's .git is a one-line file, which the find pass
+# ignores by design (docs/DESIGN.md#find-pass); this is the only place it counts.
+check_mutation 'a worktree .git file is no checkout' test_other_checkouts.sh \
+    's|    case "\$head" in "gitdir: "\*) return 0 ;; esac|    case "$head" in "gitdirZZ: "*) return 0 ;; esac|'
+
+# The opposite direction: any folder named .git counts, so an ordinary
+# node_modules with a stray .git folder in it is never offered again.
+check_mutation 'a .git folder counts without a HEAD' test_other_checkouts.sh \
+    's|        \[ -e "\$1/HEAD" \]|        :|'
+
+# Junk inside a worktree is keyed to the OUTER repo (the worktree is no repo to
+# the find pass), so without this walk the outer repo's ignore of wt/ condemns
+# the worktree's tracked build/.
+check_mutation 'the walk up to the repo root is skipped' test_other_checkouts.sh \
+    's|    while case "\$d" in "\$repo"/\*) true ;; \*) false ;; esac; do|    while false; do|'
+
+check_mutation 'the probe looks one level down only' test_other_checkouts.sh \
+    's|find "\$p" -mindepth 1 -name \.git -prune -print|find "$p" -mindepth 1 -maxdepth 1 -name .git -prune -print|'
+
+check_mutation 'a folder find cannot read counts as clean' test_other_checkouts.sh \
+    's|-name \.git -prune -print 2>/dev/null) \|\| return 0|-name .git -prune -print 2>/dev/null) \|\| return 1|'
+
+# One is deliberately absent: dropping touches_other_checkout's `[ -d "$p" ]`
+# shortcut. find over a plain file lists nothing below it, so every answer is the
+# same and only a fork is saved — an equivalent mutant, verified to survive
+# rather than assumed.
+
 # ---- the running-app check (docs/DESIGN.md#running-app-check) ---------------
 #
 # The two CAT_PROCS-alignment mutations are the reason this section exists. A

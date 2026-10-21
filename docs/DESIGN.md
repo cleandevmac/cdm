@@ -391,8 +391,9 @@ already cover, not one of your projects). Everything offered is git-ignored,
 without exception (see #ignored-proof). Within a project every item keeps its
 own method: known regenerable build/dependency dirs are deleted (they rebuild),
 while any other git-ignored entry (local config, logs) is moved to the
-Trash so it can be recovered. One shape is never offered at all — `.env*` files
-(see #env-file-exception).
+Trash so it can be recovered. Two shapes are never offered at all — `.env*` files
+(see #env-file-exception), and anything that holds or sits inside another git
+checkout (see #other-checkouts).
 
 The helpers in this part of the script (classify_method / project_key /
 shorten_left / flush_project_category) are only ever called from scan_projects and
@@ -463,7 +464,10 @@ regenerable target dirs, while pruning heavy/irrelevant trees. Only a real
 .git folder counts as a project root: a bare ".git" file (git worktrees /
 submodules) is intentionally ignored, so a folder is a "project" only when
 it directly contains a .git directory. .git is captured in its own branch
-(not the prune list) so we learn the repo but never descend it.
+(not the prune list) so we learn the repo but never descend it. That leaves
+worktrees, submodules and anything under a pruned name invisible to this
+pass, which is why the offered paths are probed for checkouts afterwards
+(see #other-checkouts).
 
 <a id="ignored-proof"></a>
 ## A matching name is not evidence — the git-ignored proof
@@ -519,6 +523,47 @@ correct failure direction but is a hard stop rather than a degraded mode. And
 `scan.maxRepos` now bounds the git work for both passes, so a repo past the cap
 contributes nothing at all — candidate-holding repos are therefore walked first,
 so the cap sheds repos that had nothing name-matched to lose.
+
+<a id="other-checkouts"></a>
+## Never another checkout
+
+A repo can git-ignore a folder that holds a whole other checkout. Claude Code
+keeps its git worktrees in `.claude/worktrees`, and the repos it works in ignore
+that folder; people vendor a clone into an ignored `vendor/`; a parent repo may
+ignore a child repo outright. `git ls-files --others --ignored --directory`
+reports each such folder as one ignored entry, so the git-ignored pass offered
+it for the Trash — worktrees, their uncommitted work and nested clones
+included. The find pass could not have caught it: it counts only a `.git`
+directory as a repo (see #find-pass), a worktree's or submodule's `.git` is a
+one-line `gitdir: …` file, and it never enters pruned names such as `.claude`
+or `vendor`.
+
+So scan_projects probes every offered path (touches_other_checkout) and drops
+one that
+
+  * holds a checkout anywhere below it: a `.git` directory with a `HEAD`, or a
+    `.git` file that starts with `gitdir: ` (is_checkout_marker). A `.git`
+    folder without a `HEAD` is not a repo, so a `node_modules` that happens to
+    carry one is still offered;
+  * sits inside a checkout below its own repo root. Junk inside a worktree the
+    find pass did enter is keyed to the outer repo, since the worktree is no
+    repo to that pass, and the ignored proof then stops at the outer root — so
+    without this walk the outer repo's ignore of `wt/` would condemn a `build/`
+    the worktree tracks. It is the proof's own stop at the repo root (see
+    #ignored-proof), applied to checkouts the find pass cannot see;
+  * cannot be read in full. find exits non-zero, and an unreadable folder might
+    hold anything.
+
+The probe runs before the nesting de-dup (see #dedup-nesting), not after. A
+child repo that the outer repo ignores whole is dropped as an item, while the
+child's own ignored `node_modules`, which the child's own git vouches for,
+survives in the child's row; run after, the de-dup would already have folded
+that item into the parent it then drops.
+
+The cost is one find per offered folder, reading names only, over folders the
+sizing pass walks anyway. It fails in the same direction as the `.env*`
+exception: over-refusing costs a missed cleanup, and the alternative is the
+Trash swallowing someone's worktree.
 
 <a id="dedup-nesting"></a>
 ## De-duplicating nested items
