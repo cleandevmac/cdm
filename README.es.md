@@ -48,24 +48,31 @@ Asegúrate de que `~/.local/bin` esté en tu `PATH` (`export PATH="$HOME/.local/
 
 ## Qué limpia
 
-**1. Cachés de desarrollo y artefactos de compilación** — DerivedData y DeviceSupport de Xcode, caché de compilación y de módulos de Go, npm/npx/pnpm/yarn, herramientas de build de JS (Turbo, Vite, webpack, Parcel, ESLint), Gradle, Maven, sbt/Ivy, Cargo, Python (pip, uv, poetry, ruff, mypy), Ruby/Bundler, Bun, Deno, CocoaPods, SwiftPM, Composer, Bazel, Zig, CLIs de nube (kubectl, AWS, gcloud, Azure), Docker buildx, JetBrains, Playwright y las cachés de descargas de Homebrew y PlatformIO.
+**1. Cachés de desarrollo y artefactos de compilación** — DerivedData y DeviceSupport de Xcode, caché de compilación y de módulos de Go, npm/npx/pnpm/yarn, herramientas de build de JS (Turbo, Vite, webpack, Parcel, ESLint), Gradle, Maven, sbt/Ivy, Cargo, Python (pip, uv, poetry, ruff, mypy), Ruby/Bundler, Bun, Deno, CocoaPods, SwiftPM, Composer, Bazel, Zig, CLIs de nube (kubectl, AWS, gcloud, Azure), Docker buildx, JetBrains, Playwright, las cachés de descargas de Homebrew y PlatformIO, las cachés de Android Studio y las instantáneas del emulador, y las imágenes de sistema de Android que ya no usa ningún AVD.
 
-**2. Cachés de Electron, navegadores y aplicaciones** — VS Code, Claude, Slack; Chrome, Brave, Edge, Vivaldi y Arc analizados por perfil de navegador; Firefox; y cachés de SDK de fallos y telemetría (Sentry, Crashlytics, Sparkle).
+**2. Piezas de SDK instaladas que se vuelven a descargar** — todas opcionales, y cada fila dice cómo vuelven: las plataformas y toolchains instalados de PlatformIO (el siguiente `pio run` descarga lo que necesite); el NDK de Android, CMake y las fuentes del SDK; todas las versiones de build-tools y plataformas de Android salvo la más reciente; la imagen de sistema de un AVD que nadie ha arrancado en 60 días (la fila nombra el AVD, que no arrancará hasta reinstalar la imagen); y cada toolchain de Rust que no sea tu predeterminado ni stable, que se quita con `rustup toolchain uninstall` (la fila nombra cualquier repositorio que lo fije). `sdkmanager`, `adb`, el emulador y el propio `pio` de PlatformIO nunca se ofrecen.
 
-**3. Basura de proyectos, agrupada por repositorio** — `node_modules`, `dist`, `build`, `target`, `__pycache__` y archivos ignorados por git. Desactivado por defecto; usa `-p` para habilitarlo. Las ejecuciones interactivas te lo ofrecen al terminar el escaneo de cachés.
+**3. Transcripciones antiguas de Claude Code** — opcional: las sesiones sin tocar en 30 días, con sus archivos de subagentes y salidas de herramientas, van a la Papelera. Las sesiones en curso, la memoria automática y la configuración nunca se tocan. Cuando el historial es grande, `cdm` además imprime la clave de `~/.claude/settings.json` (`desktopSessionCleanupPeriodDays`) con la que Claude Code borra por sí mismo las sesiones antiguas de Desktop y Cowork; `cdm` nunca edita ese archivo.
 
-**4. Docker / Podman** — `system prune -af`, y `buildx prune -af` sobre la caché de cada builder de buildx (un builder detenido se arranca para ello y se vuelve a detener), opcional. Los volúmenes con nombre nunca se borran.
+**4. Cachés de Electron, navegadores y aplicaciones** — VS Code, Claude (incluidas las cachés de webview de cada vista previa y, opcionalmente, la imagen de la VM de Cowork), Slack; Chrome, Brave, Edge, Vivaldi y Arc analizados por perfil de navegador; Firefox; y cachés de SDK de fallos y telemetría (Sentry, Crashlytics, Sparkle).
 
-**5. Datos de aplicaciones huérfanos** — Application Support, Caches y Preferences que pertenecen a aplicaciones que ya no están instaladas.
+**5. Basura de proyectos, agrupada por repositorio** — `node_modules`, `dist`, `build`, `target`, `__pycache__` y archivos ignorados por git. Solo lo que el propio repositorio ignora en git. Desactivado por defecto; usa `-p` para habilitarlo. Las ejecuciones interactivas te lo ofrecen al terminar el escaneo de cachés.
 
-**Lo que liberaría un reinicio.** El swap, las carpetas temporales que macOS vacía al arrancar y los archivos borrados que una app aún mantiene abiertos no son archivos que ningún limpiador pueda borrar, y en un disco lleno pueden sumar decenas de GB. Cuando superan el espacio libre, `cdm` lo indica bajo la línea del disco y nombra las apps que retienen archivos borrados: cerrarlas libera esa parte sin reiniciar.
+**6. Docker / Podman** — `system prune -af`, y `buildx prune -af` sobre la caché de cada builder de buildx (un builder detenido se arranca para ello y se vuelve a detener), opcional. Los volúmenes con nombre nunca se borran.
+
+**7. Datos de aplicaciones huérfanos** — Application Support, Caches y Preferences que pertenecen a aplicaciones que ya no están instaladas.
+
+**Lo que liberaría un reinicio.** El swap, las carpetas temporales que macOS vacía al arrancar y los archivos borrados que una app aún mantiene abiertos no son archivos que ningún limpiador pueda borrar, y en un disco lleno pueden sumar decenas de GB. Cuando superan el espacio libre, `cdm` lo indica bajo la línea del disco, y de nuevo en el menú, y nombra las apps que retienen archivos borrados: cerrarlas libera esa parte sin reiniciar.
 
 ## Seguridad
 
 - **No se borra nada sin una confirmación detallada.** Ves el plan y los tamaños, y entonces escribes `y`.
 - **Las cachés se borran de forma permanente**: se regeneran en la siguiente compilación.
-- **Los datos huérfanos de aplicaciones y los archivos ignorados por git van a la Papelera**, así que se pueden recuperar.
+- **Los datos huérfanos de aplicaciones, los archivos ignorados por git y las transcripciones antiguas de Claude Code van a la Papelera**, así que se pueden recuperar.
+- **Todo lo que quita software instalado empieza sin marcar** — piezas de SDK, toolchains, imágenes del emulador — y su fila dice cómo vuelve. Un toolchain de Rust lo quita `rustup`, nunca `rm`.
 - **Nunca se tocan, digan lo que digan las reglas:** `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`, `~/.ssh` y iCloud Drive. Esta protección está por debajo del motor de reglas: una regla no puede saltársela.
+- **Una carpeta solo es basura del proyecto si tu repositorio la ignora en git.** Coincidir con un nombre como `dist`, `build` o `Pods` no basta: cdm comprueba con git que el directorio esté ignorado *y* sin seguimiento, así que un `build/` con scripts de publicación bajo control de versiones o un `dist/` confirmado se quedan como están.
+- **Los archivos `.env*` nunca se ofrecen para borrar.** El escaneo de proyectos los salta aunque estén ignorados por git: guardan secretos y configuración local que nada regenera.
 - **Los sandboxes de aplicaciones y los datos propiedad de Apple o del sistema nunca se tocan.**
 - La lista de aplicaciones instaladas se lee de **LaunchServices**, así que los prefPanes, plugins y otros paquetes que no son `.app` no se marcan por error como huérfanos.
 - `--dry-run` no borra nada.
@@ -86,7 +93,7 @@ Asegúrate de que `~/.local/bin` esté en tu `PATH` (`export PATH="$HOME/.local/
 
 Después de una limpieza imprime el resumen y pregunta qué sigue: `r` volver a escanear · `b` invitarme a un café · `q` salir (la opción por defecto — Enter o cualquier otra tecla hacen lo mismo).
 
-Los elementos se ordenan de mayor a menor. Las cachés regenerables seguras vienen premarcadas; el repositorio de Maven, los navegadores de Playwright, los registros de fallos, las carpetas de proyectos y los datos de aplicaciones huérfanos empiezan sin marcar. `s` restablece esa selección por defecto.
+Los elementos se ordenan de mayor a menor. Las cachés regenerables seguras vienen premarcadas; el repositorio de Maven, los navegadores de Playwright, los registros de fallos, las piezas de SDK instaladas, las transcripciones antiguas de Claude Code, las carpetas de proyectos y los datos de aplicaciones huérfanos empiezan sin marcar. `s` restablece esa selección por defecto.
 
 ## Reglas editables
 
@@ -102,6 +109,10 @@ Los objetivos viven en JSON dentro de `rules/`, no en el código. Añade o quita
 | `orphans.json` | Detección de datos de aplicaciones huérfanos |
 
 Cada categoría es un objeto con `icon`, `name`, `desc`, `paths`, `default` (premarcada o no) y `method` (`rm` para borrar, `trash` para mover a la Papelera). Apunta `cdm` a tu propio conjunto con `--patterns <directorio-o-url>`.
+
+Una categoría también puede llevar `procs`: los nombres de proceso de las apps que reescribirían esas cachés mientras se ejecutan (`"procs": ["Google Chrome", "Code"]`). `cdm` nombra las que estén abiertas antes de pedirte confirmación, porque borrar una caché bajo su propia app solo le devuelve el espacio. Los nombres deben coincidir exactamente con `pgrep -x`.
+
+Algunas categorías fijan un `kind`, y el script calcula lo que ofrecen: `android-images` (imágenes de sistema que ningún AVD arranca), `android-idle-images` (imágenes que solo arrancan AVD inactivos durante `idleDays`), `older-versions` (cada glob es una familia de versiones; todas salvo la más reciente), `rust-toolchains` (toolchains que no son el predeterminado ni stable) y `claude-transcripts` (sesiones sin tocar en `idleDays`, siempre a la Papelera). Toman sus globs de `images` o `candidates`, nunca de `paths`, así que un `cdm` demasiado antiguo para conocer el tipo no ofrece nada.
 
 ## Opciones
 

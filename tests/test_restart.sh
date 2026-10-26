@@ -18,7 +18,12 @@
 #     ORs its two filters into every open file on the volume; the fake answers
 #     that way too, so dropping -a is visible rather than harmless.
 #   * restart_line shows only when the total is at least RESTART_NOTE_MIN_KB AND
-#     at least the free space, and both edges are asserted from each side.
+#     at least the free space, and both edges are asserted from each side. The
+#     apps holding deleted files are named from a floor of their own,
+#     RESTART_HOLDERS_MIN_KB: below 1 GiB they are daemons nobody can quit.
+#   * the menu repeats the line in a row under its status row. The frame is a
+#     fixed height, so that row has to be counted in the chrome and shed first
+#     in a short window — every frame below is measured, not eyeballed.
 
 . "$(dirname "$0")/lib.sh"
 
@@ -221,17 +226,24 @@ assert_eq "A restart would free about 36.20 GB: 14.00 GB of swap, 20.10 GB of te
 DISK_HELD_KB=43442; DISK_HELD_APPS="linkd, sharingd, Google Chrome"
 assert_eq "A restart would free about 34.14 GB: 14.00 GB of swap, 20.10 GB of temp files, 42 MB of deleted files still held open" \
     "$(restart_line)" "a small held part names no apps"
+# Over the note's own 100 MiB floor but under the holders' 1 GiB one: still no names.
+DISK_HELD_KB=524288
+assert_eq "A restart would free about 34.60 GB: 14.00 GB of swap, 20.10 GB of temp files, 512 MB of deleted files still held open" \
+    "$(restart_line)" "a held part under 1 GiB names no apps, whatever the note's floor"
+DISK_HELD_KB=1048576
+assert_eq "A restart would free about 35.10 GB: 14.00 GB of swap, 20.10 GB of temp files, 1.00 GB of deleted files still held open by linkd, sharingd, Google Chrome — quitting them frees that part now" \
+    "$(restart_line)" "a held part of exactly 1 GiB names its apps"
 
 # Parts under 1 MiB are left out of the sentence, not printed as "0 KB".
 DISK_SWAP_KB=14680064; DISK_TEMP_KB=12; DISK_HELD_KB=0; DISK_HELD_APPS=""
 assert_eq "A restart would free about 14.00 GB: 14.00 GB of swap" \
     "$(restart_line)" "empty parts are left out"
 
-# The 1 GiB floor, both sides (free space held at 0 so only the floor decides).
-DISK_FREE_KB=0; DISK_SWAP_KB=1048575; DISK_TEMP_KB=0
-assert_fail "restart_line stays quiet below 1 GiB" restart_line
-DISK_SWAP_KB=1048576
-assert_ok "restart_line speaks at exactly 1 GiB" restart_line
+# The 100 MiB floor, both sides (free space held at 0 so only the floor decides).
+DISK_FREE_KB=0; DISK_SWAP_KB=102399; DISK_TEMP_KB=0; DISK_HELD_KB=0
+assert_fail "restart_line stays quiet below 100 MiB" restart_line
+DISK_SWAP_KB=102400
+assert_ok "restart_line speaks at exactly 100 MiB" restart_line
 
 # Against the free space, both sides: a restart that would free less than the
 # disk already has free is not worth the line.
@@ -239,5 +251,66 @@ DISK_SWAP_KB=5242956; DISK_TEMP_KB=0; DISK_FREE_KB=5242957
 assert_fail "restart_line stays quiet when free space exceeds it" restart_line
 DISK_FREE_KB=5242956
 assert_ok "restart_line speaks when it matches the free space" restart_line
+
+# ---- refresh_restart_note ------------------------------------------------------
+#
+# What the main flow and the rescan call: measure again, keep the line. The fakes
+# above still describe the full Mac, so the swap comes back from df rather than
+# from a global this file set by hand.
+t_df_rows="$HOME|$DATA
+/System/Volumes/VM|$VM"
+t_du_rows=""; t_lsof=""; BOOT_TEMP_DIRS=()
+DISK_FREE_KB=445644; DISK_SWAP_KB=0; DISK_TEMP_KB=0; DISK_HELD_KB=0
+refresh_restart_note
+assert_eq "A restart would free about 14.00 GB: 14.00 GB of swap" "$RESTART_NOTE" \
+    "refresh_restart_note measures, then keeps the line"
+DISK_FREE_KB=99999999
+refresh_restart_note
+assert_eq "" "$RESTART_NOTE" "refresh_restart_note clears a line that no longer applies"
+
+# ---- the note in the menu ---------------------------------------------------------
+#
+# render_menu repaints a frame exactly TERM_ROWS lines tall when the list
+# overflows; the note is one more line of chrome. Thirty rows overflow every size
+# used here. Escapes are stripped so each line is what the terminal shows.
+t_frame() {
+    TERM_ROWS="$1"; TERM_COLS="$2"; SIZE_STALE=0
+    render_menu | sed "s/$(printf '\033')\[[0-9;?]*[A-Za-z]//g"
+}
+t_lines() { t_frame "$1" "$2" | awk 'END { print NR }'; }
+t_items() { t_frame "$1" "$2" | grep -c '\[ \]'; }
+t_widest() {
+    local l w=0
+    while IFS= read -r l; do dwidth "$l"; [ "$_DW" -gt "$w" ] && w=$_DW; done <<EOF
+$(t_frame "$1" "$2")
+EOF
+    echo "$w"
+}
+CAT_ICON=(); CAT_NAME=(); CAT_DESC=(); CAT_METHOD=(); CAT_DEFAULT=(); CAT_PATHS=()
+CAT_KB=(); CAT_SEL=(); CAT_PMETHOD=(); CAT_SUMMARY=(); CAT_PROCS=(); N=0
+t_i=0
+while [ "$t_i" -lt 30 ]; do
+    add_category "x" "row $t_i" "desc $t_i" rm 0 "/nowhere/$t_i"; CAT_KB[$t_i]=$((1000 + t_i))
+    t_i=$((t_i + 1))
+done
+CURSOR=0; SCROLL=0; DRY_RUN=0
+DISK_TOTAL_KB=239362496; DISK_USED_KB=238916852; DISK_FREE_KB=445644
+
+RESTART_NOTE=""
+assert_eq "24" "$(t_lines 24 100)" "no note: the frame is the window's height"
+assert_eq "18" "$(t_items 24 100)" "no note: 24 rows less six of chrome"
+
+RESTART_NOTE="A restart would free about 36.20 GB: 14.00 GB of swap, 20.10 GB of temp files, 2.10 GB of deleted files still held open by Google Chrome, node — quitting them frees that part now"
+assert_eq "↳ $RESTART_NOTE" "$(t_frame 24 300 | sed -n 3p)" "the note is the row under the status row"
+assert_eq "24" "$(t_lines 24 100)" "with the note the frame is still the window's height"
+assert_eq "17" "$(t_items 24 100)" "the note takes its row from the list"
+assert_ok "a long note is clipped to the window" test "$(t_widest 24 100)" -le 100
+
+# A short window sheds the note before anything else: at 10 rows it still fits
+# beside a three-row list, at 8 it goes and the description goes after it.
+assert_eq "10" "$(t_lines 10 100)" "10 rows: the frame fits"
+assert_eq "1" "$(t_frame 10 100 | grep -c '↳')" "10 rows: the note is kept"
+assert_eq "8" "$(t_lines 8 100)" "8 rows: the frame still fits"
+assert_eq "0" "$(t_frame 8 100 | grep -c '↳')" "8 rows: the note is shed"
 
 test_summary

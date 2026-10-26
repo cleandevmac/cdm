@@ -68,6 +68,9 @@ ${YELLOW}Options:${NC}
 
 ${YELLOW}What it cleans (all described by editable JSON pattern files):${NC}
   • Developer caches & build artifacts (Xcode, Go, Node, Gradle, Cargo, ...).
+  • Installed SDK pieces that download again (PlatformIO toolchains, the
+    Android NDK & older build-tools, idle AVDs' system images, extra Rust
+    toolchains) and old Claude Code transcripts — all unchecked.
   • Electron / browser / application caches.
   • Project junk in your repos, grouped per project (node_modules, dist, build,
     target, git-ignored) — pick exactly which repos to clean. Only ever what
@@ -76,8 +79,8 @@ ${YELLOW}What it cleans (all described by editable JSON pattern files):${NC}
 
 ${YELLOW}Safety:${NC}
   • Caches & build output regenerate — removing them costs only a re-download/build.
-  • Orphaned app data and git-ignored files are moved to the Trash, never
-    hard-deleted, so you can undo.
+  • Orphaned app data, git-ignored files and old Claude Code transcripts are
+    moved to the Trash, never hard-deleted, so you can undo.
   • Nothing runs until you review an itemized plan and confirm.
   • App sandboxes and Apple/system-owned data are never touched.
 
@@ -245,7 +248,12 @@ DISK_SWAP_KB=0
 DISK_TEMP_KB=0
 DISK_HELD_KB=0
 DISK_HELD_APPS=""
-RESTART_NOTE_MIN_KB=1048576
+RESTART_NOTE_MIN_KB=102400
+# Below this the apps holding deleted files are daemons nobody can quit.
+RESTART_HOLDERS_MIN_KB=1048576
+# The line itself, kept for the menu's row under the status row. Set by
+# refresh_restart_note, in the parent shell.
+RESTART_NOTE=""
 # The two temp folders a boot empties — not /private/var/tmp, which survives one.
 BOOT_TEMP_DIRS=("$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)" "/private/tmp")
 
@@ -389,10 +397,64 @@ restart_line() {
     if [ "$DISK_HELD_KB" -ge 1024 ]; then
         parts="${parts:+$parts, }$(human_kb "$DISK_HELD_KB") of deleted files still held open"
         # Named only when quitting them would matter: small holders are daemons.
-        [ "$DISK_HELD_KB" -ge "$RESTART_NOTE_MIN_KB" ] && [ -n "$DISK_HELD_APPS" ] &&
+        [ "$DISK_HELD_KB" -ge "$RESTART_HOLDERS_MIN_KB" ] && [ -n "$DISK_HELD_APPS" ] &&
             parts="$parts by $DISK_HELD_APPS — quitting them frees that part now"
     fi
     printf 'A restart would free about %s: %s' "$(human_kb "$total")" "$parts"
+}
+
+# refresh_restart_note — measure again and set RESTART_NOTE, empty when
+# restart_line has nothing to say. Sets globals, so parent shell only.
+refresh_restart_note() {
+    restart_stats
+    RESTART_NOTE=$(restart_line) || RESTART_NOTE=""
+}
+
+# Claude Code's session history: how big it is, and how many transcripts are
+# older than Claude Code's own age limit, which it keeps for sessions from
+# Claude Desktop and Cowork unless desktopSessionCleanupPeriodDays is set. Set
+# by claude_history_stats, read by claude_history_line.
+# see docs/DESIGN.md#claude-history
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+CLAUDE_HIST_KB=0
+CLAUDE_OLD_N=0
+CLAUDE_KEEP_DAYS=30
+CLAUDE_NOTE_MIN_KB=1048576
+
+# claude_history_stats — refresh the globals above. Fails, measuring nothing,
+# once settings.json sets desktopSessionCleanupPeriodDays: Claude Code then ages
+# those transcripts out itself. Parent shell only.
+claude_history_stats() {
+    CLAUDE_HIST_KB=0; CLAUDE_OLD_N=0; CLAUDE_KEEP_DAYS=30
+    local settings="$CLAUDE_DIR/settings.json" v
+    [ -d "$CLAUDE_DIR/projects" ] || return 1
+    grep -q '"desktopSessionCleanupPeriodDays"' "$settings" 2>/dev/null && return 1
+    v=$(grep -o '"cleanupPeriodDays"[[:space:]]*:[[:space:]]*[0-9][0-9]*' "$settings" 2>/dev/null | head -n 1)
+    v="${v##*[![:digit:]]}"
+    case "$v" in ''|*[!0-9]*) ;; *) [ "$v" -ge 1 ] && CLAUDE_KEEP_DAYS="$v" ;; esac
+    # Sessions only, as register_transcripts counts them: <uuid>.jsonl.
+    CLAUDE_OLD_N=$(find "$CLAUDE_DIR/projects" -mindepth 2 -maxdepth 2 -type f -name '*.jsonl' \
+        -mtime +"$CLAUDE_KEEP_DAYS" 2>/dev/null | LC_ALL=C awk '
+            { id = $0; sub(/.*\//, "", id); sub(/\.jsonl$/, "", id) }
+            length(id) == 36 && id ~ /^[0-9a-fA-F-]+$/ { n++ }
+            END { print n + 0 }')
+    [ "$CLAUDE_OLD_N" -gt 0 ] || return 1
+    CLAUDE_HIST_KB=$(bounded 10 du -sk "$CLAUDE_DIR/projects" 2>/dev/null | awk 'NR==1 {print $1}')
+    case "$CLAUDE_HIST_KB" in ''|*[!0-9]*) CLAUDE_HIST_KB=0; return 1 ;; esac
+    return 0
+}
+
+# claude_history_line — the two lines of advice from those globals; empty (and
+# failing) unless some transcript outlived the age limit and the history is at
+# least CLAUDE_NOTE_MIN_KB. Formats only, like disk_line.
+claude_history_line() {
+    [ "$CLAUDE_OLD_N" -gt 0 ] && [ "$CLAUDE_HIST_KB" -ge "$CLAUDE_NOTE_MIN_KB" ] || return 1
+    local where="${CLAUDE_DIR/#$HOME/~}" unit=transcripts
+    [ "$CLAUDE_OLD_N" -eq 1 ] && unit=transcript
+    printf '%s of session history in %s/projects, %s %s older than %s days.\n' \
+        "$(human_kb "$CLAUDE_HIST_KB")" "$where" "$CLAUDE_OLD_N" "$unit" "$CLAUDE_KEEP_DAYS"
+    printf 'Claude Code keeps Claude Desktop and Cowork sessions at any age; to have it delete them after %s days too, add "desktopSessionCleanupPeriodDays": %s to %s/settings.json' \
+        "$CLAUDE_KEEP_DAYS" "$CLAUDE_KEEP_DAYS" "$where"
 }
 
 # bounded <seconds> <cmd...> — run a command with a hard timeout (macOS has no
@@ -418,6 +480,15 @@ engine_ok() { case "$1" in docker|podman|nerdctl) return 0 ;; *) return 1 ;; esa
 du_kb() {
     [ -e "$1" ] || { echo 0; return; }
     du -sk "$1" 2>/dev/null | awk '{print $1}' || echo 0
+}
+# paths_kb <newline-separated paths> — what they hold together, in KiB, from one
+# du for the whole list instead of one per path: a row of a thousand old
+# transcripts took ten seconds a path at a time. see docs/DESIGN.md#sizing
+paths_kb() {
+    # An empty list must not reach du, which would size the current directory.
+    case "$1" in *[![:space:]]*) ;; *) echo 0; return 0 ;; esac
+    printf '%s\n' "$1" | grep -v '^$' | tr '\n' '\0' | xargs -0 du -sk 2>/dev/null \
+        | awk '{ s += $1 } END { print s + 0 }'
 }
 # is_nonempty <path> — true for a regular file, or a directory holding anything.
 # Uses globbing rather than $(ls -A) because this runs once per matched path and
@@ -501,6 +572,8 @@ function run(argv) {
     (c.engines || []).forEach(function(e){ out.push(tab('E', e)); });
     (c.procs   || []).forEach(function(p){ out.push(tab('PROC', p)); });
     (c.images  || []).forEach(function(p){ out.push(tab('IMG', p)); });
+    (c.candidates || []).forEach(function(p){ out.push(tab('CAND', p)); });
+    if (c.idleDays != null) out.push(tab('DAYS', c.idleDays));
   });
   (o.patternFiles    || []).forEach(function(f){ out.push(tab('FILE', f)); });
   if (o.orphanConfig) out.push(tab('ORPHAN', o.orphanConfig));
@@ -532,6 +605,9 @@ PROJ_ICON=(); PROJ_NAME=(); PROJ_METHOD=(); PROJ_DEFAULT=(); PROJ_DESC=(); PROJ_
 GI_ICON=""; GI_NAME=""; GI_METHOD="trash"; GI_DEFAULT=0; GI_DESC=""; GI_ON=0
 # Pending container (docker/podman) categories (filled by JSON).
 CONT_ICON=(); CONT_NAME=(); CONT_METHOD=(); CONT_DEFAULT=(); CONT_DESC=(); CONT_ENGINES=(); CONT_N=0
+# The pending rust-toolchains category (filled by JSON, registered by
+# scan_toolchains), and the rustup its clean runs.
+TC_ON=0; TC_ICON=""; TC_NAME=""; TC_DEFAULT=0; TC_DESC=""; TC_GLOBS=""; RUSTUP_BIN=""
 
 # Orphan-detection config.
 ORPH_LOC_PATH=(); ORPH_LOC_STRIP=(); SKIP_PREFIXES=(); SHARED_COMPONENTS=()
@@ -577,25 +653,43 @@ avd_configs() {
     done
 }
 
-# avd_image_refs — the system-image dirs some AVD boots from (each config.ini's
-# image.sysdir.N, SDK-relative), one per line with the trailing slash stripped.
+# avd_last_started <avd-dir> — epoch seconds of the newest file the emulator
+# wrote there, i.e. when the AVD last ran. config.ini counts only when nothing
+# else is there: Android Studio rewrites it without booting anything.
+# see docs/DESIGN.md#android-idle-images
+avd_last_started() {
+    stat -f '%m %N' "$1"/* 2>/dev/null | awk '
+        { n = $0; sub(/^[0-9]+ /, "", n); sub(/.*\//, "", n) }
+        n == "config.ini" { c = $1; next }
+        $1 > m { m = $1 }
+        END { print (m > 0 ? m : c + 0) }'
+}
+
+# avd_image_users — "<image ref>US<AVD name>US<last started>" for each image an
+# AVD boots from: config.ini's image.sysdir.N, SDK-relative, trailing slash
+# stripped; the name is the AVD's folder without .avd.
 # see docs/DESIGN.md#android-images
-avd_image_refs() {
-    local cfg line v
+avd_image_users() {
+    local cfg line v name last us=$'\x1f'
     while IFS= read -r cfg; do
         [ -n "$cfg" ] || continue
+        name="${cfg%/config.ini}"; name="${name##*/}"; name="${name%.avd}"
+        last=$(avd_last_started "${cfg%/config.ini}")
         while IFS= read -r line || [ -n "$line" ]; do
             case "$line" in
                 image.sysdir.*=*)
                     v="${line#*=}"; v="${v%$'\r'}"
                     while :; do case "$v" in " "*) v="${v# }" ;; *" "|*/) v="${v%?}" ;; *) break ;; esac; done
-                    [ -n "$v" ] && printf '%s\n' "$v" ;;
+                    [ -n "$v" ] && printf '%s%s%s%s%s\n' "$v" "$us" "$name" "$us" "$last" ;;
             esac
         done < "$cfg"
     done <<EOF
 $(avd_configs)
 EOF
 }
+
+# avd_image_refs — the system-image dirs some AVD boots from, one per line.
+avd_image_refs() { avd_image_users | cut -d $'\x1f' -f 1; }
 
 # register_paths — expand a newline-separated path list (~ and * globs) into the
 # concrete, existing, non-empty, de-duplicated paths, then add the category.
@@ -630,6 +724,169 @@ $m
 $pathlist
 EOF
     [ -n "$found" ] && add_category "$icon" "$name" "$desc" "$method" "$default" "$found" "" "$procs"
+}
+
+# _glob_matches <pattern> — set _GM to the pattern's existing, non-empty
+# matches, one per line. Expands the way register_paths does — bash's own
+# globbing, IFS emptied, no fork. see docs/DESIGN.md#glob-expansion
+_GM=""
+_glob_matches() {
+    local m __ifs="$IFS"
+    _GM=""; IFS=
+    for m in $1; do
+        IFS="$__ifs"
+        if [ -e "$m" ] && is_nonempty "$m"; then _GM="${_GM:+$_GM$NL}$m"; fi
+        IFS=
+    done
+    IFS="$__ifs"
+    return 0
+}
+
+# newest_version <paths> — the one path of a newline-separated list whose name
+# carries the highest version: numeric fields compared as numbers (36.1 above
+# 36, 37.0 above 36.1), and a release above its own pre-release (36.0.0 above
+# 36.0.0-rc1). see docs/DESIGN.md#older-versions
+newest_version() {
+    printf '%s\n' "$1" | LC_ALL=C awk '
+        BEGIN { Z = "00000000000000000000" }
+        NF {
+            n = $0; sub(/.*\//, "", n); v = ""; tail = n
+            if (match(n, /[0-9][0-9.]*/)) { v = substr(n, RSTART, RLENGTH); tail = substr(n, RSTART + RLENGTH) }
+            c = split(v, f, "."); k = ""
+            for (j = 1; j <= 8; j++) { d = (j <= c && f[j] != "") ? f[j] : "0"; k = k substr(Z, 1, 20 - length(d)) d "." }
+            print k ((v != "" && tail == "") ? "~" : "!") "\t" $0
+        }' | LC_ALL=C sort | tail -n 1 | cut -f 2-
+}
+
+# register_older — like register_paths, but each pattern is one family of
+# sibling versions (build-tools/*), and the newest of each family is kept: only
+# the older ones are offered. see docs/DESIGN.md#older-versions
+register_older() {
+    local icon="$1" name="$2" method="$3" default="$4" desc="$5" globs="$6" procs="${7:-}"
+    local found="" pat m newest
+    while IFS= read -r pat; do
+        [ -n "$pat" ] || continue
+        _glob_matches "$(expand_tilde "$pat")"
+        # A family of one has nothing older in it.
+        case "$_GM" in *"$NL"*) ;; *) continue ;; esac
+        newest=$(newest_version "$_GM")
+        while IFS= read -r m; do
+            [ -n "$m" ] && [ "$m" != "$newest" ] || continue
+            case "$NL$found$NL" in *"$NL$m$NL"*) continue ;; esac
+            found="${found:+$found$NL}$m"
+        done <<EOF
+$_GM
+EOF
+    done <<EOF
+$globs
+EOF
+    [ -n "$found" ] && add_category "$icon" "$name" "$desc" "$method" "$default" "$found" "" "$procs"
+}
+
+# register_idle_images — one category per system image that only idle AVDs
+# boot from: some AVD names it, and none of those has started in <days> days.
+# Each row names its AVDs, since without the image they no longer boot.
+# see docs/DESIGN.md#android-idle-images
+register_idle_images() {
+    local icon="$1" name="$2" method="$3" default="$4" desc="$5" globs="$6" days="${7:-}"
+    # No usable age, no idea what idle means: offer nothing.
+    case "$days" in ''|*[!0-9]*) return 0 ;; esac
+    local users cutoff pat m ref an last avds newest recent rel seen="" since us=$'\x1f'
+    users=$(avd_image_users)
+    [ -n "$users" ] || return 0
+    cutoff=$(( $(date +%s) - days * 86400 ))
+    while IFS= read -r pat; do
+        [ -n "$pat" ] || continue
+        _glob_matches "$(expand_tilde "$pat")"
+        while IFS= read -r m; do
+            [ -n "$m" ] || continue
+            case "$NL$seen$NL" in *"$NL$m$NL"*) continue ;; esac
+            seen="${seen:+$seen$NL}$m"
+            avds=""; newest=0; recent=0
+            while IFS="$us" read -r ref an last; do
+                [ -n "$ref" ] && ends_with_any "$m" "$ref" || continue
+                # An AVD whose age cannot be read counts as in use.
+                case "$last" in ''|*[!0-9]*) recent=1; continue ;; esac
+                [ "$last" -ge "$cutoff" ] && recent=1
+                [ "$last" -gt "$newest" ] && newest="$last"
+                # One AVD is found twice: as <home>/<name>.avd and through <name>.ini.
+                case ", $avds, " in *", $an, "*) ;; *) avds="${avds:+$avds, }$an" ;; esac
+            done <<EOF
+$users
+EOF
+            # No AVD at all is the unused-images row's case; a recent one keeps it.
+            [ -n "$avds" ] && [ "$recent" -eq 0 ] || continue
+            rel="${m#*/system-images/}"
+            since=$(date -r "$newest" +%Y-%m-%d 2>/dev/null)
+            add_category "$icon" "$name: $rel" \
+                "Booted only by ${avds}, last started ${since}. ${desc} Reinstall: sdkmanager \"system-images;${rel//\//;}\"" \
+                "$method" "$default" "$m"
+            CAT_SUMMARY[$((N - 1))]="${avds} · idle since ${since}"
+        done <<EOF
+$_GM
+EOF
+    done <<EOF
+$globs
+EOF
+}
+
+# register_transcripts — one category for the Claude Code sessions, in the
+# candidate project folders, whose transcript has not changed in <days> days:
+# each <id>.jsonl and its <id>/ folder of subagent and tool-output files. Never
+# memory/, never a session sessions/*.json says is running, always to the Trash
+# and never pre-selected, whatever the rule says.
+# see docs/DESIGN.md#claude-transcripts
+register_transcripts() {
+    local icon="$1" name="$2" desc="$3" globs="$4" days="${5:-}"
+    case "$days" in ''|*[!0-9]*) return 0 ;; esac
+    local pat d f id live="|" found n roots="" out="$SCAN_DIR/transcripts"
+    local dirs=()
+    while IFS= read -r pat; do
+        [ -n "$pat" ] || continue
+        _glob_matches "$(expand_tilde "$pat")"
+        while IFS= read -r d; do
+            [ -d "$d" ] || continue
+            dirs[${#dirs[@]}]="$d"
+            # The sessions/ that lists running sessions sits beside projects/.
+            case "$NL$roots$NL" in *"$NL${d%/projects/*}$NL"*) ;; *) roots="${roots:+$roots$NL}${d%/projects/*}" ;; esac
+        done <<EOF
+$_GM
+EOF
+    done <<EOF
+$globs
+EOF
+    [ "${#dirs[@]}" -gt 0 ] || return 0
+    while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        for f in "$d"/sessions/*.json; do
+            [ -f "$f" ] || continue
+            id=$(grep -o '"sessionId"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null | head -n 1)
+            id="${id%\"}"; id="${id##*\"}"
+            [ -n "$id" ] && live="$live$id|"
+        done
+    done <<EOF
+$roots
+EOF
+    # One pass, not a loop: a thousand sessions appended one by one to a bash
+    # string took six seconds. The folders are listed first, so each transcript
+    # finds its own; a name that is not a session id (a UUID) is never offered.
+    {
+        find "${dirs[@]}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sed 's/^/D /'
+        find "${dirs[@]}" -mindepth 1 -maxdepth 1 -type f -name '*.jsonl' -mtime +"$days" 2>/dev/null | sed 's/^/F /'
+    } | LC_ALL=C awk -v live="$live" '
+        /^D / { D[substr($0, 3)] = 1; next }
+        /^F / {
+            f = substr($0, 3); id = f; sub(/.*\//, "", id); sub(/\.jsonl$/, "", id)
+            if (length(id) != 36 || id !~ /^[0-9a-fA-F-]+$/ || index(live, "|" id "|")) next
+            print f
+            s = substr(f, 1, length(f) - 6); if (s in D) print s
+        }' > "$out"
+    n=$(grep -c '\.jsonl$' "$out" 2>/dev/null)
+    case "$n" in ''|*[!0-9]*|0) return 0 ;; esac
+    found=$(cat "$out")
+    add_category "$icon" "$name" "$desc" "trash" 0 "$found"
+    local unit=sessions; [ "$n" -eq 1 ] && unit=session
+    CAT_SUMMARY[$((N - 1))]="$n $unit"
 }
 
 # ---------------------------------------------------------------------------
@@ -724,6 +981,7 @@ load_patterns() {
     PROJ_ICON=(); PROJ_NAME=(); PROJ_METHOD=(); PROJ_DEFAULT=(); PROJ_DESC=(); PROJ_DIRS=(); PROJ_N=0
     GI_ON=0; GI_ICON=""; GI_NAME=""; GI_METHOD="trash"; GI_DEFAULT=0; GI_DESC=""
     CONT_ICON=(); CONT_NAME=(); CONT_METHOD=(); CONT_DEFAULT=(); CONT_DESC=(); CONT_ENGINES=(); CONT_N=0
+    TC_ON=0; TC_ICON=""; TC_NAME=""; TC_DEFAULT=0; TC_DESC=""; TC_GLOBS=""
     ORPH_LOC_PATH=(); ORPH_LOC_STRIP=(); SKIP_PREFIXES=(); SHARED_COMPONENTS=()
     PARSED_OK=0
 
@@ -763,6 +1021,23 @@ flush_pattern_category() {
             # does not know this kind registers nothing rather than every image.
             # see docs/DESIGN.md#android-images
             register_paths "$cicon" "$cname" "$cmethod" "$cdefault" "$cdesc" "$cimages" "$cprocs" "$(avd_image_refs)" ;;
+        # The kinds below work out their offer too, so they also take their globs
+        # from a field an older cdm ignores ("images" or "candidates").
+        android-idle-images)
+            # see docs/DESIGN.md#android-idle-images
+            register_idle_images "$cicon" "$cname" "$cmethod" "$cdefault" "$cdesc" "$cimages" "$cdays" ;;
+        older-versions)
+            # see docs/DESIGN.md#older-versions
+            register_older "$cicon" "$cname" "$cmethod" "$cdefault" "$cdesc" "$ccands" "$cprocs" ;;
+        claude-transcripts)
+            # see docs/DESIGN.md#claude-transcripts
+            register_transcripts "$cicon" "$cname" "$cdesc" "$ccands" "$cdays" ;;
+        rust-toolchains)
+            # Registered by scan_toolchains once every file has loaded: naming the
+            # repos that pin a toolchain takes the project scan's config.
+            # see docs/DESIGN.md#rust-toolchains
+            TC_ON=1; TC_ICON="$cicon"; TC_NAME="$cname"; TC_DEFAULT="$cdefault"
+            TC_DESC="$cdesc"; TC_GLOBS="$ccands" ;;
         *)
             register_paths "$cicon" "$cname" "$cmethod" "$cdefault" "$cdesc" "$cpaths" "$cprocs" ;;
     esac
@@ -775,6 +1050,7 @@ flush_pattern_category() {
 parse_pattern_stream() {
     local file="$1"
     local ckind="" cicon="" cname="" cmethod="" cdefault="" cdesc="" cpaths="" cdirs="" cengines="" cprocs="" cimages="" have=0
+    local ccands="" cdays=""
     local line typ rest us=$'\x1f'
     while IFS= read -r line; do
         typ="${line%%$us*}"       # text before the first US separator
@@ -791,7 +1067,7 @@ parse_pattern_stream() {
                 IFS=$us read -r ckind cicon cname cmethod cdefault cdesc <<EOF
 $rest
 EOF
-                have=1; cpaths=""; cdirs=""; cengines=""; cprocs=""; cimages="" ;;
+                have=1; cpaths=""; cdirs=""; cengines=""; cprocs=""; cimages=""; ccands=""; cdays="" ;;
             P) cpaths="${cpaths:+$cpaths
 }$rest" ;;
             D) cdirs="${cdirs:+$cdirs
@@ -802,6 +1078,9 @@ EOF
 }$rest" ;;
             IMG) cimages="${cimages:+$cimages
 }$rest" ;;
+            CAND) ccands="${ccands:+$ccands
+}$rest" ;;
+            DAYS) cdays="$rest" ;;
         esac
     done < <(parse_json_file "$file")
     flush_pattern_category
@@ -1303,6 +1582,207 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Rust toolchains (rustup)
+# see docs/DESIGN.md#rust-toolchains
+# ---------------------------------------------------------------------------
+
+# toolchain_name_ok <name> — a toolchain name in the shape rustup itself writes
+# (1.98-aarch64-apple-darwin, nightly-2026-01-01-x86_64-apple-darwin): ASCII
+# letters, digits, '.', '_' and '-', led by a letter or digit. It reaches
+# rustup as an argument and the plan as text, so anything else is skipped.
+toolchain_name_ok() {
+    is_ascii "$1" || return 1
+    case "$1" in ''|[![:alnum:]]*|*[![:alnum:]._-]*) return 1 ;; esac
+    return 0
+}
+
+# rustup_bin — the rustup to uninstall with: the one on PATH, else Cargo's own.
+rustup_bin() {
+    local b
+    b=$(command -v rustup 2>/dev/null) && [ -n "$b" ] && { printf '%s' "$b"; return 0; }
+    b="${CARGO_HOME:-$HOME/.cargo}/bin/rustup"
+    [ -x "$b" ] && { printf '%s' "$b"; return 0; }
+    return 1
+}
+
+# rustup_default <rustup-home> — the default_toolchain its settings.toml names.
+rustup_default() {
+    local line v
+    [ -f "$1/settings.toml" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            default_toolchain*=*)
+                v="${line#*=}"; v="${v#*\"}"; v="${v%%\"*}"
+                printf '%s' "$v"; return 0 ;;
+        esac
+    done < "$1/settings.toml"
+    return 0
+}
+
+# toolchain_is <toolchain> <channel> — true when <channel>, as a pin or an
+# override writes it, installs <toolchain>: the same name, or that name plus a
+# host triple. 1.98 is 1.98-aarch64-apple-darwin; nightly is not
+# nightly-2026-01-01-aarch64-apple-darwin.
+toolchain_is() {
+    [ "$1" = "$2" ] && return 0
+    local host="${1#"$2"-}"
+    [ "$host" != "$1" ] || return 1
+    case "$host" in *-*-*-*) return 1 ;; *-apple-darwin) return 0 ;; esac
+    return 1
+}
+
+# toolchain_file_channel <file> — the channel a rust-toolchain.toml pins
+# ([toolchain] channel = "1.98"), or a legacy rust-toolchain's bare first line.
+toolchain_file_channel() {
+    local line v bare=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        while :; do case "$line" in [[:space:]]*) line="${line#?}" ;; *) break ;; esac; done
+        case "$line" in
+            ''|'#'*) continue ;;
+            channel*=*)
+                v="${line#*=}"
+                while :; do case "$v" in [[:space:]]*) v="${v#?}" ;; *) break ;; esac; done
+                case "$v" in
+                    \"*) v="${v#\"}"; v="${v%%\"*}" ;;
+                    \'*) v="${v#\'}"; v="${v%%\'*}" ;;
+                    *)   v="${v%%[[:space:]#]*}" ;;
+                esac
+                printf '%s' "$v"; return 0 ;;
+            *=*|'['*) ;;
+            *) [ -n "$bare" ] || bare="${line%%[[:space:]]*}" ;;
+        esac
+    done < "$1"
+    case "${1##*/}" in rust-toolchain) [ -n "$bare" ] && printf '%s' "$bare" ;; esac
+    return 0
+}
+
+# toolchain_pins <rustup-homes> — "<dir>US<channel>" for every rust-toolchain or
+# rust-toolchain.toml under the project scan's roots, at its depth and with its
+# prune list and junk dir names pruned; then every `rustup override` in each
+# home's settings.toml.
+toolchain_pins() {
+    local homes="$1" us=$'\x1f' d first=1 prune_expr="" root rexp f ch h line dir in_over i=0
+    case "$SCAN_DEPTH" in ''|*[!0-9]*) SCAN_DEPTH=6 ;; esac
+    # A crate vendored under node_modules or target/ pins nothing of yours.
+    local names=()
+    for d in ${SCAN_PRUNE[@]+"${SCAN_PRUNE[@]}"}; do names[${#names[@]}]="$d"; done
+    while [ "$i" -lt "$PROJ_N" ]; do
+        while IFS= read -r d; do
+            [ -n "$d" ] && names[${#names[@]}]="$d"
+        done <<EOF
+${PROJ_DIRS[$i]}
+EOF
+        i=$((i + 1))
+    done
+    for d in ${names[@]+"${names[@]}"}; do
+        case "$d" in *[\*\?\[]*) continue ;; esac
+        if [ "$first" -eq 1 ]; then prune_expr="-name $(printf '%q' "$d")"; first=0
+        else prune_expr="$prune_expr -o -name $(printf '%q' "$d")"; fi
+    done
+    local find_expr='\( -type f \( -name rust-toolchain -o -name rust-toolchain.toml \) -print \)'
+    [ -n "$prune_expr" ] && find_expr="\\( \\( $prune_expr \\) -prune \\) -o $find_expr"
+    for root in ${SCAN_ROOTS[@]+"${SCAN_ROOTS[@]}"}; do
+        rexp=$(expand_tilde "$root")
+        [ -d "$rexp" ] || continue
+        eval "find \"\$rexp\" -maxdepth \"\$SCAN_DEPTH\" $find_expr" 2>/dev/null
+    done | while IFS= read -r f; do
+        ch=$(toolchain_file_channel "$f")
+        [ -n "$ch" ] && printf '%s%s%s\n' "${f%/*}" "$us" "$ch"
+    done
+    while IFS= read -r h; do
+        [ -f "$h/settings.toml" ] || continue
+        in_over=0
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+                '['*) if [ "$line" = "[overrides]" ]; then in_over=1; else in_over=0; fi ;;
+                \"*\"*=*)
+                    [ "$in_over" -eq 1 ] || continue
+                    dir="${line#\"}"; dir="${dir%%\"*}"
+                    ch="${line#*=}"; ch="${ch#*\"}"; ch="${ch%%\"*}"
+                    [ -n "$dir" ] && [ -n "$ch" ] && printf '%s%s%s\n' "$dir" "$us" "$ch" ;;
+            esac
+        done < "$h/settings.toml"
+    done <<EOF
+$homes
+EOF
+}
+
+# scan_toolchains — one category per installed toolchain other than the default
+# and stable: its folder for the size, rustup to remove it, and every repo that
+# pins it named on the row. Registers nothing without a rustup to remove with.
+scan_toolchains() {
+    [ "$TC_ON" -eq 1 ] || return 0
+    RUSTUP_BIN=$(rustup_bin) || { RUSTUP_BIN=""; return 0; }
+    local pat m tc home def homes="" cands="" pins dir ch by us=$'\x1f'
+    while IFS= read -r pat; do
+        [ -n "$pat" ] || continue
+        _glob_matches "$(expand_tilde "$pat")"
+        while IFS= read -r m; do
+            # A linked toolchain (`rustup toolchain link`) is the user's own build.
+            [ -n "$m" ] && [ -d "$m" ] && [ ! -L "$m" ] || continue
+            tc="${m##*/}"
+            toolchain_name_ok "$tc" || continue
+            home="${m%/toolchains/*}"
+            [ "$home" != "$m" ] || continue
+            # Kept: stable, and the default.
+            case "$tc" in stable-*) continue ;; esac
+            def=$(rustup_default "$home")
+            [ -n "$def" ] && toolchain_is "$tc" "$def" && continue
+            case "$NL$cands$NL" in *"$NL$m$NL"*) continue ;; esac
+            cands="${cands:+$cands$NL}$m"
+            case "$NL$homes$NL" in *"$NL$home$NL"*) ;; *) homes="${homes:+$homes$NL}$home" ;; esac
+        done <<EOF
+$_GM
+EOF
+    done <<EOF
+$TC_GLOBS
+EOF
+    [ -n "$cands" ] || return 0
+    pins=$(toolchain_pins "$homes")
+    while IFS= read -r m; do
+        [ -n "$m" ] || continue
+        tc="${m##*/}"; by=""
+        while IFS="$us" read -r dir ch; do
+            [ -n "$ch" ] && toolchain_is "$tc" "$ch" || continue
+            dir="${dir/#$HOME/~}"
+            case ", $by, " in *", $dir, "*) continue ;; esac
+            by="${by:+$by, }$dir"
+        done <<EOF
+$pins
+EOF
+        if [ -n "$by" ]; then
+            add_category "$TC_ICON" "$TC_NAME: $tc" \
+                "$TC_DESC Pinned by ${by}, whose next build downloads it again." \
+                "rustup" "$TC_DEFAULT" "$m"
+            CAT_SUMMARY[$((N - 1))]="pinned by $by"
+        else
+            add_category "$TC_ICON" "$TC_NAME: $tc" "$TC_DESC" "rustup" "$TC_DEFAULT" "$m"
+        fi
+    done <<EOF
+$cands
+EOF
+}
+
+# run_rustup_uninstall <toolchain dirs> — remove each with rustup's own
+# `toolchain uninstall`, never rm, pointed at the rustup home it was found in.
+run_rustup_uninstall() {
+    local p tc
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        tc="${p##*/}"
+        if [ -z "$RUSTUP_BIN" ]; then echo "${YELLOW}  skip (no rustup): ${tc}${NC}"; continue; fi
+        if ! toolchain_name_ok "$tc" || ! is_safe_target "$p"; then
+            echo "${YELLOW}  skip (unsafe): ${p}${NC}"; continue
+        fi
+        echo "${DIM}  \$ rustup toolchain uninstall ${tc}${NC}"
+        RUSTUP_HOME="${p%/toolchains/*}" "$RUSTUP_BIN" toolchain uninstall "$tc" 2>&1 | sed 's/^/    /'
+    done <<EOF
+$1
+EOF
+}
+
+# ---------------------------------------------------------------------------
 # Orphaned-app-data detection
 # ---------------------------------------------------------------------------
 INSTALLED="$SCAN_DIR/installed.txt"
@@ -1425,6 +1905,7 @@ register_orphans() {
 # build_categories — assemble the whole list (re-run after a cleanup).
 build_categories() {
     load_patterns
+    scan_toolchains
     scan_projects
     scan_containers
     register_orphans
@@ -1442,14 +1923,7 @@ compute_sizes_write() {
             if [ "${CAT_METHOD[$i]}" = "container" ]; then
                 echo "${CAT_KB[$i]}" > "$SCAN_DIR/size_$i"
             else
-                local total=0 p kb
-                while IFS= read -r p; do
-                    [ -n "$p" ] || continue
-                    kb=$(du_kb "$p"); total=$((total + kb))
-                done <<EOF
-${CAT_PATHS[$i]}
-EOF
-                echo "$total" > "$SCAN_DIR/size_$i"
+                paths_kb "${CAT_PATHS[$i]}" > "$SCAN_DIR/size_$i"
             fi
         ) &
         # Size categories concurrently; cap only to avoid a runaway process count.
@@ -1717,17 +2191,20 @@ render_menu() {
     local rows=$TERM_ROWS cols=$TERM_COLS
     case "$rows" in ''|*[!0-9]*) rows=24 ;; esac
     case "$cols" in ''|*[!0-9]*) cols=80 ;; esac
-    # Chrome is title, status, keys, the two scroll hints and the description; every
-    # other row goes to the item list. keys_h is measured, not assumed to be 1.
+    # Chrome is title, status, the restart note when there is one, keys, the two
+    # scroll hints and the description; every other row goes to the item list.
+    # keys_h is measured, not assumed to be 1.
     # see docs/DESIGN.md#menu-chrome
     build_keys_line "$cols"
     local keys_h=$(( (${#_P} + cols - 1) / cols ))
     [ "$keys_h" -lt 1 ] && keys_h=1
     # A window too short for the full chrome AND a usable list sheds the optional
-    # chrome rather than emit a frame taller than the screen.
-    # see docs/DESIGN.md#short-windows
-    local show_desc=1 show_ind=1
-    local viewport=$((rows - 5 - keys_h))
+    # chrome — the restart note first — rather than emit a frame taller than the
+    # screen. see docs/DESIGN.md#short-windows
+    local show_note=0 show_desc=1 show_ind=1
+    [ -n "$RESTART_NOTE" ] && show_note=1
+    local viewport=$((rows - 5 - keys_h - show_note))
+    [ "$viewport" -lt 3 ] && { show_note=0; viewport=$((rows - 5 - keys_h)); }
     [ "$viewport" -lt 3 ] && { show_desc=0; viewport=$((rows - 4 - keys_h)); }
     [ "$viewport" -lt 3 ] && { show_ind=0; viewport=$((rows - 2 - keys_h)); }
     [ "$viewport" -lt 1 ] && viewport=1
@@ -1769,6 +2246,12 @@ render_menu() {
     # Selected / max reclaimable / disk free, tier-fitted to this width above.
     build_status_line "$cols"
     buf+="${_SS}${K}${NL}"
+    # What only a restart gives back, on a disk that full — the same line the scan
+    # printed above the menu, clipped to one row. see docs/DESIGN.md#restart-estimate
+    if [ "$show_note" -eq 1 ]; then
+        _clip_plain "↳ $RESTART_NOTE" $((cols - 1))
+        buf+="${DIM}${_CLIP}${NC}${K}${NL}"
+    fi
     # Keys render as reverse-video caps against dim labels so they read at a
     # glance rather than blending into the sentence; build_keys_line (above)
     # already sized _S to fit this width on one line.
@@ -1851,6 +2334,7 @@ show_details() {
         trash)      label="${YELLOW}move to Trash (recoverable)${NC}" ;;
         emptytrash) label="${RED}permanently empty the Trash${NC}" ;;
         container)  label="${RED}run 'buildx prune -af' per builder, then 'system prune -af' (images/containers/build caches; volumes kept)${NC}" ;;
+        rustup)     label="${RED}uninstall with 'rustup toolchain uninstall'${NC}" ;;
         project)    label="${RED}delete build/dep dirs${NC} + ${YELLOW}Trash other git-ignored (recoverable)${NC}" ;;
         *)          label="${RED}delete permanently${NC}" ;;
     esac
@@ -1988,6 +2472,7 @@ print_plan() {
             trash)      tag="${YELLOW}→ Trash   ${NC}" ;;
             emptytrash) tag="${RED}EMPTY TRASH${NC}"; PLAN_HAS_PERMANENT=1 ;;
             container)  tag="${RED}PRUNE     ${NC}"; PLAN_HAS_PERMANENT=1 ;;
+            rustup)     tag="${RED}UNINSTALL ${NC}"; PLAN_HAS_PERMANENT=1 ;;
             project)
                 # A project deletes regenerable dirs and/or trashes git-ignored:
                 # mark permanent unless every item is Trash-only.
@@ -2091,6 +2576,7 @@ run_cleanup() {
             echo "${BLUE}▸ ${CAT_NAME[$i]}${NC}"
             if [ "$method" = "emptytrash" ]; then empty_trash; continue; fi
             if [ "$method" = "container" ]; then run_container_prune "${CAT_PATHS[$i]}"; continue; fi
+            if [ "$method" = "rustup" ]; then run_rustup_uninstall "${CAT_PATHS[$i]}"; continue; fi
             if [ "$method" = "project" ]; then
                 # Per-project categories carry a per-path method (rm vs trash);
                 # pair each path with its method (US-joined) and act accordingly.
@@ -2244,10 +2730,14 @@ fi
 if disk_stats; then
     echo " ${BLUE}💽 Disk:${NC} $(disk_line)"
     # see docs/DESIGN.md#restart-estimate
-    restart_stats
-    if restart_note=$(restart_line); then
-        echo "    ${DIM}↳ ${restart_note}${NC}"
-    fi
+    refresh_restart_note
+    [ -n "$RESTART_NOTE" ] && echo "    ${DIM}↳ ${RESTART_NOTE}${NC}"
+fi
+# Advice, not a clean: Claude Code's own setting stops its history piling up.
+# see docs/DESIGN.md#claude-history
+if claude_history_stats && claude_note=$(claude_history_line); then
+    echo " ${BLUE}💬 Claude Code:${NC} ${claude_note%%$NL*}"
+    echo "    ${DIM}↳ ${claude_note#*$NL}${NC}"
 fi
 
 # ---- Scan ------------------------------------------------------------------
@@ -2362,6 +2852,8 @@ while true; do
                     echo "${BLUE}Goodbye!${NC}"; exit 0
                 fi
                 printf '%s' " ${CYAN}Rescanning...${NC} "
+                # The clean moved the free space, and with it the restart note.
+                [ "$DISK_TOTAL_KB" -gt 0 ] && refresh_restart_note
                 build_categories; printf '\r\033[K'
                 [ "$N" -eq 0 ] && { echo "${GREEN}All clean!${NC}"; exit 0; }
                 compute_sizes; prune_zero; sort_by_size

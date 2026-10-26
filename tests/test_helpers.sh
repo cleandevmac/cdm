@@ -291,6 +291,38 @@ assert_ok "du_kb reports KB, not 512-byte blocks or bytes" \
 assert_ok "du_kb of a directory sums its contents" \
     test "$(du_kb "$HOME/du")" -ge 256
 
+# ---- paths_kb() ------------------------------------------------------------
+#
+# What compute_sizes_write records for a category: one du over the whole list,
+# because a row can hold a thousand paths and a du apiece took ten seconds. The
+# same 512K blob as above, so the -k window carries over; a path with a space,
+# a missing path and blank lines must each cost nothing and break nothing.
+mkdir -p "$HOME/du/with space" || exit 1
+dd if=/dev/urandom of="$HOME/du/with space/blob2" bs=1024 count=512 2>/dev/null || exit 1
+t_pk=$(paths_kb "$HOME/du/blob
+
+$HOME/du/with space/blob2
+$HOME/no-such-path-xyzzy")
+assert_ok "paths_kb is a bare integer" t_is_int "$t_pk"
+assert_ok "paths_kb sums every path, a spaced one included (at least 512)" test "$t_pk" -ge 512
+assert_ok "paths_kb reports KB, not 512-byte blocks (at most 1536)" test "$t_pk" -le 1536
+assert_eq "$(du_kb "$HOME/du/blob")" "$(paths_kb "$HOME/du/blob")" "one path: the same as du_kb"
+# An empty list is 0 — never du's answer for the current directory, which is
+# what a bare `du -sk` sizes.
+assert_eq "0" "$(cd "$HOME/du" && paths_kb "")" "an empty list is 0"
+assert_eq "0" "$(cd "$HOME/du" && paths_kb "
+")" "a list of blank lines is 0"
+
+# compute_sizes_write / _read: a category is sized from ALL its paths, and a
+# container row keeps the figure its engine reported (nothing on disk to du).
+N=2
+CAT_METHOD=(rm container); CAT_PATHS=("$HOME/du/blob
+$HOME/du/with space/blob2" "docker"); CAT_KB=(0 777)
+compute_sizes_write; compute_sizes_read
+assert_ok "a category is sized from every one of its paths (at least 1024)" test "${CAT_KB[0]}" -ge 1024
+assert_eq "777" "${CAT_KB[1]}" "a container row keeps its own figure"
+N=0; CAT_METHOD=(); CAT_PATHS=(); CAT_KB=()
+
 # ---- cat_indices() ---------------------------------------------------------
 #
 # Reads the global N. Set it here rather than inheriting it: at this point cdm's

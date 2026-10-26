@@ -504,7 +504,7 @@ check_mutation 'parser ignores PROC records' test_running_apps.sh \
     's|            PROC) cprocs="\${cprocs:+\$cprocs|            ZZPROC) cprocs="${cprocs:+$cprocs|'
 
 check_mutation 'cprocs not reset per category (procs leak to the next rule)' test_running_apps.sh \
-    's|have=1; cpaths=""; cdirs=""; cengines=""; cprocs=""; cimages="" ;;|have=1; cpaths=""; cdirs=""; cengines=""; cimages="" ;;|'
+    's|cengines=""; cprocs=""; cimages=""; ccands|cengines=""; cimages=""; ccands|'
 
 check_mutation 'register_paths drops procs on the way to add_category' test_running_apps.sh \
     's|"\$default" "\$found" "" "\$procs"|"$default" "$found" ""|'
@@ -652,8 +652,11 @@ check_mutation 'holders ranked smallest first' test_restart.sh \
 check_mutation 'mount point cut at its first space' test_restart.sh \
     's@NR==2 {for (i = 6; i <= NF; i++) printf "%s%s", (i > 6 ? " " : ""), \$i}@NR==2 {print $6}@'
 
-check_mutation 'restart line shown below 1 GiB' test_restart.sh \
-    's@^RESTART_NOTE_MIN_KB=1048576$@RESTART_NOTE_MIN_KB=0@'
+check_mutation 'restart line shown below 100 MiB' test_restart.sh \
+    's@^RESTART_NOTE_MIN_KB=102400$@RESTART_NOTE_MIN_KB=0@'
+
+check_mutation 'restart line floor back at 1 GiB' test_restart.sh \
+    's@^RESTART_NOTE_MIN_KB=102400$@RESTART_NOTE_MIN_KB=1048576@'
 
 check_mutation 'restart line shown when more is already free' test_restart.sh \
     's@    \[ "\$total" -ge "\$DISK_FREE_KB" \] || return 1@    :@'
@@ -662,7 +665,237 @@ check_mutation 'temp files left out of the total' test_restart.sh \
     's@local total=\$((DISK_SWAP_KB + DISK_TEMP_KB + DISK_HELD_KB))@local total=$((DISK_SWAP_KB + DISK_HELD_KB))@'
 
 check_mutation 'holders named however little they hold' test_restart.sh \
-    's@\[ "\$DISK_HELD_KB" -ge "\$RESTART_NOTE_MIN_KB" \] && \[ -n@[ -n@'
+    's@\[ "\$DISK_HELD_KB" -ge "\$RESTART_HOLDERS_MIN_KB" \] && \[ -n@[ -n@'
+
+# The holders keep a floor of their own: from the note's 100 MiB, a daemon
+# holding 150 MB would be named as something to quit.
+check_mutation 'holders named from the note floor' test_restart.sh \
+    's@\[ "\$DISK_HELD_KB" -ge "\$RESTART_HOLDERS_MIN_KB" \]@[ "$DISK_HELD_KB" -ge "$RESTART_NOTE_MIN_KB" ]@'
+
+check_mutation 'refresh_restart_note keeps the last measurement' test_restart.sh \
+    's@^    restart_stats$@    :@'
+
+# The note's row in the menu. The frame is a fixed height, so each of these
+# either loses the row or makes the frame taller than the window.
+check_mutation 'the menu never shows the restart note' test_restart.sh \
+    's@^    \[ -n "\$RESTART_NOTE" \] && show_note=1@    :@'
+
+check_mutation 'the note row is left out of the chrome count' test_restart.sh \
+    's@local viewport=\$((rows - 5 - keys_h - show_note))@local viewport=$((rows - 5 - keys_h))@'
+
+check_mutation 'a short window keeps the note' test_restart.sh \
+    's@\[ "\$viewport" -lt 3 \] && { show_note=0; viewport=\$((rows - 5 - keys_h)); }@:@'
+
+check_mutation 'the note row is not clipped to the window' test_restart.sh \
+    's@_clip_plain "↳ \$RESTART_NOTE" \$((cols - 1))@_CLIP="↳ $RESTART_NOTE"@'
+
+# ---- sizing: one du per category (docs/DESIGN.md#sizing) ---------------------
+
+check_mutation 'paths_kb keeps only the last du line' test_helpers.sh \
+    "s@| awk '{ s += \$1 } END { print s + 0 }'@| awk '{ s = \$1 } END { print s + 0 }'@"
+
+check_mutation 'paths_kb asks du for 512-byte blocks' test_helpers.sh \
+    's@xargs -0 du -sk 2>/dev/null@xargs -0 du -s 2>/dev/null@'
+
+check_mutation 'a category is sized from its first path only' test_helpers.sh \
+    's@paths_kb "\${CAT_PATHS\[\$i\]}" > "\$SCAN_DIR/size_\$i"@du_kb "${CAT_PATHS[$i]%%$NL*}" > "$SCAN_DIR/size_$i"@'
+
+# One is deliberately absent: dropping paths_kb's empty-list guard. Its job is to
+# keep a bare `du -sk` — the current directory — from being run, but macOS's
+# xargs runs nothing on empty input, so on the only OS cdm supports no input can
+# tell the mutant apart. The guard stays for an xargs that does run (GNU's).
+# Verified to survive rather than assumed.
+
+# ---- the computed kinds' fields (docs/DESIGN.md#json-line-protocol) -----------
+
+check_mutation 'JXA stops emitting CAND records' test_json.sh \
+    "s@(c.candidates || \[\]).forEach(function(p){ out.push(tab('CAND', p)); });@@"
+
+check_mutation 'JXA stops emitting DAYS records' test_json.sh \
+    "s@if (c.idleDays != null) out.push(tab('DAYS', c.idleDays));@@"
+
+check_mutation 'parser ignores CAND records' test_json.sh \
+    's|            CAND) ccands=|            ZZCAND) ccands=|'
+
+check_mutation 'parser ignores DAYS records' test_json.sh \
+    's|            DAYS) cdays="\$rest" ;;|            ZZDAYS) cdays="$rest" ;;|'
+
+check_mutation 'candidates leak into the next category' test_json.sh \
+    's|cimages=""; ccands=""; cdays="" ;;|cimages=""; cdays="" ;;|'
+
+check_mutation 'idleDays leak into the next category' test_json.sh \
+    's|cimages=""; ccands=""; cdays="" ;;|cimages=""; ccands="" ;;|'
+
+# ---- older-versions (docs/DESIGN.md#older-versions) ---------------------------
+#
+# Every one of these keeps something other than the newest version, or offers
+# the newest itself. "Newest" is a version order a string sort gets wrong.
+
+check_mutation 'older-versions kind unrecognised' test_older_versions.sh \
+    's|^        older-versions)$|        zz-older-versions)|'
+
+check_mutation 'versions compared as strings (9 above 10)' test_older_versions.sh \
+    's@k = k substr(Z, 1, 20 - length(d)) d "."@k = k d "."@'
+
+check_mutation 'only the first version field compared' test_older_versions.sh \
+    's@for (j = 1; j <= 8; j++)@for (j = 1; j <= 1; j++)@'
+
+check_mutation 'a pre-release outranks its release' test_older_versions.sh \
+    's@((v != "" \&\& tail == "") ? "~" : "!")@((v != "" \&\& tail == "") ? "!" : "~")@'
+
+check_mutation 'the newest version is offered too' test_older_versions.sh \
+    's@\[ -n "\$m" \] \&\& \[ "\$m" != "\$newest" \] || continue@[ -n "$m" ] || continue@'
+
+check_mutation 'a version two patterns reach is offered twice' test_older_versions.sh \
+    's@            case "\$NL\$found\$NL" in \*"\$NL\$m\$NL"\*) continue ;; esac@            :@'
+
+check_mutation 'register_older drops procs on the way to add_category' test_older_versions.sh \
+    '/^register_older()/,/^}/ s@"\$default" "\$found" "" "\$procs"@"$default" "$found" ""@'
+
+# One is deliberately absent: dropping the family-of-one guard
+# (`case "$_GM" in *"$NL"*)`). A lone version is its own newest, so the
+# `!= "$newest"` test below it already keeps it; the guard only saves an awk.
+# Verified to survive rather than assumed.
+
+# ---- android-idle-images (docs/DESIGN.md#android-idle-images) -----------------
+#
+# The one kind that offers an image an AVD boots from, so most of these offer
+# one it must not: in use lately, booted by nothing, or aged by the wrong file.
+
+check_mutation 'android-idle-images kind unrecognised' test_android_idle.sh \
+    's|^        android-idle-images)$|        zz-android-idle-images)|'
+
+check_mutation 'a recently started AVD does not keep its image' test_android_idle.sh \
+    's@                \[ "\$last" -ge "\$cutoff" \] && recent=1@                :@'
+
+check_mutation 'an image no AVD boots is offered as idle' test_android_idle.sh \
+    's@            \[ -n "\$avds" \] && \[ "\$recent" -eq 0 \] || continue@            [ "$recent" -eq 0 ] || continue@'
+
+check_mutation "config.ini's mtime counts as a start" test_android_idle.sh \
+    's@        n == "config.ini" { c = \$1; next }@@'
+
+check_mutation 'an AVD found twice is named twice' test_android_idle.sh \
+    's@case ", \$avds, " in \*", \$an, "\*) ;; \*) avds="\${avds:+\$avds, }\$an" ;; esac@avds="${avds:+$avds, }$an"@'
+
+check_mutation 'idle images offered without a usable idleDays' test_android_idle.sh \
+    '/^register_idle_images()/,/^}/ s@    case "\$days" in ..|\*\[!0-9\]\*) return 0 ;; esac@    :@'
+
+# ---- claude-transcripts (docs/DESIGN.md#claude-transcripts) -------------------
+
+check_mutation 'claude-transcripts kind unrecognised' test_claude_history.sh \
+    's|^        claude-transcripts)$|        zz-claude-transcripts)|'
+
+check_mutation "transcripts take the rule's method and default" test_claude_history.sh \
+    's@add_category "\$icon" "\$name" "\$desc" "trash" 0 "\$found"@add_category "$icon" "$name" "$desc" "rm" 1 "$found"@'
+
+check_mutation 'a running session is offered' test_claude_history.sh \
+    's@ || index(live, "|" id "|")@@'
+
+check_mutation 'running sessions are never read' test_claude_history.sh \
+    's@            \[ -n "\$id" \] && live="\$live\$id|"@            :@'
+
+check_mutation 'a name that is not a session id is offered' test_claude_history.sh \
+    's@if (length(id) != 36 || id !~ /^\[0-9a-fA-F-\]+\$/ || index@if (index@'
+
+check_mutation "a session's folder is left behind" test_claude_history.sh \
+    's@            s = substr(f, 1, length(f) - 6); if (s in D) print s@            s = ""@'
+
+check_mutation 'fresh transcripts are offered' test_claude_history.sh \
+    's@ -mtime +"\$days" 2>/dev/null | sed@ 2>/dev/null | sed@'
+
+# One is deliberately absent: register_transcripts' idleDays guard. Without it an
+# empty or non-numeric age reaches `find -mtime +…`, which refuses it and lists
+# nothing — the same empty row the guard returns. Verified to survive rather
+# than assumed; the guard keeps the refusal explicit. (register_idle_images'
+# twin is mutated above: its age goes through $(( )), where it is not refused.)
+
+# ---- the Claude Code history note (docs/DESIGN.md#claude-history) -------------
+
+check_mutation 'the note ignores desktopSessionCleanupPeriodDays' test_claude_history.sh \
+    "s@    grep -q '\"desktopSessionCleanupPeriodDays\"' \"\$settings\" 2>/dev/null \&\& return 1@    :@"
+
+check_mutation "the note ignores the user's cleanupPeriodDays" test_claude_history.sh \
+    's@\[ "\$v" -ge 1 \] && CLAUDE_KEEP_DAYS="\$v"@:@'
+
+check_mutation 'the note counts every old .jsonl, not sessions' test_claude_history.sh \
+    's@            length(id) == 36 && id ~ /^\[0-9a-fA-F-\]+\$/ { n++ }@            { n++ }@'
+
+check_mutation 'the note shows with no old transcripts' test_claude_history.sh \
+    's@    \[ "\$CLAUDE_OLD_N" -gt 0 \] || return 1@    :@'
+
+check_mutation 'the note shows for a small history' test_claude_history.sh \
+    's@^CLAUDE_NOTE_MIN_KB=1048576$@CLAUDE_NOTE_MIN_KB=0@'
+
+check_mutation 'CLAUDE_CONFIG_DIR ignored' test_claude_history.sh \
+    's@^CLAUDE_DIR="\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}"@CLAUDE_DIR="$HOME/.claude"@'
+
+# ---- rust-toolchains (docs/DESIGN.md#rust-toolchains) -------------------------
+#
+# What is kept, what is matched as a pin, and that the clean is rustup's: rustup
+# here is a function that logs what it is asked, so every call is pinned.
+
+check_mutation 'rust-toolchains kind unrecognised' test_rust_toolchains.sh \
+    's|^        rust-toolchains)$|        zz-rust-toolchains)|'
+
+check_mutation 'stable is offered' test_rust_toolchains.sh \
+    's@            case "\$tc" in stable-\*) continue ;; esac@            :@'
+
+check_mutation 'the default toolchain is offered' test_rust_toolchains.sh \
+    's@            \[ -n "\$def" \] && toolchain_is "\$tc" "\$def" && continue@            :@'
+
+check_mutation 'a linked toolchain is offered' test_rust_toolchains.sh \
+    's@\[ -n "\$m" \] && \[ -d "\$m" \] && \[ ! -L "\$m" \] || continue@[ -n "$m" ] \&\& [ -d "$m" ] || continue@'
+
+check_mutation 'scanned toolchain names go unchecked' test_rust_toolchains.sh \
+    's@            toolchain_name_ok "\$tc" || continue@            :@'
+
+check_mutation 'toolchain_name_ok accepts a leading dash' test_rust_toolchains.sh \
+    '/^toolchain_name_ok()/,/^}/ s@'"''"'|\[!\[:alnum:\]\]\*|@'"''"'|@'
+
+check_mutation 'a channel matches a dated nightly' test_rust_toolchains.sh \
+    's@    case "\$host" in \*-\*-\*-\*) return 1 ;; \*-apple-darwin) return 0 ;; esac@    case "$host" in *-apple-darwin) return 0 ;; esac@'
+
+check_mutation 'a legacy rust-toolchain file is ignored' test_rust_toolchains.sh \
+    's@in rust-toolchain) \[ -n@in zz-rust-toolchain) [ -n@'
+
+check_mutation 'a quoted channel keeps its quotes' test_rust_toolchains.sh \
+    's@\\"\*) v="\${v#\\"}"; v="\${v%%\\"\*}" ;;@\\"*) ;;@'
+
+check_mutation "rustup's overrides are never read" test_rust_toolchains.sh \
+    's@\[ "\$in_over" -eq 1 \] || continue@continue@'
+
+check_mutation 'pins found under junk dirs (node_modules)' test_rust_toolchains.sh \
+    's|            \[ -n "\$d" \] && names\[\${#names\[@\]}\]="\$d"|            :|'
+
+check_mutation "pins found under the scan's pruned dirs" test_rust_toolchains.sh \
+    's|    for d in \${SCAN_PRUNE\[@\]+"\${SCAN_PRUNE\[@\]}"}; do names|    for d in; do names|'
+
+check_mutation 'pins never named on the row' test_rust_toolchains.sh \
+    's@            by="\${by:+\$by, }\$dir"@            :@'
+
+check_mutation 'rows offered with no rustup to remove them' test_rust_toolchains.sh \
+    's@    RUSTUP_BIN=\$(rustup_bin) || { RUSTUP_BIN=""; return 0; }@    RUSTUP_BIN=$(rustup_bin)@'
+
+check_mutation 'uninstall skips the name check' test_rust_toolchains.sh \
+    's@        if ! toolchain_name_ok "\$tc" || ! is_safe_target "\$p"; then@        if ! is_safe_target "$p"; then@'
+
+check_mutation 'uninstall skips the safety gate' test_rust_toolchains.sh \
+    's@        if ! toolchain_name_ok "\$tc" || ! is_safe_target "\$p"; then@        if ! toolchain_name_ok "$tc"; then@'
+
+check_mutation 'uninstall runs with no rustup known' test_rust_toolchains.sh \
+    's@        if \[ -z "\$RUSTUP_BIN" \]; then echo@        if false; then echo@'
+
+check_mutation 'rustup runs against the wrong rustup home' test_rust_toolchains.sh \
+    's@        RUSTUP_HOME="\${p%/toolchains/\*}" "\$RUSTUP_BIN"@        "$RUSTUP_BIN"@'
+
+check_mutation 'the clean never routes a toolchain to rustup' test_rust_toolchains.sh \
+    's@            if \[ "\$method" = "rustup" \]; then run_rustup_uninstall "\${CAT_PATHS\[\$i\]}"; continue; fi@@'
+
+check_mutation 'the plan calls a toolchain uninstall a DELETE' test_rust_toolchains.sh \
+    's@            rustup)     tag=@            zzrustup)   tag=@'
+
+check_mutation 'details call a toolchain uninstall a delete' test_rust_toolchains.sh \
+    's@        rustup)     label=@        zzrustup)   label=@'
 
 echo
 printf 'mutations: %d, survived (holes in the tests): %d\n' "$total" "$survived"

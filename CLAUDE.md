@@ -99,8 +99,8 @@ change; the README and landing page both promise this, so preserve it.
 
 A category object is `icon`, `name`, `desc`, `method`, `default`, `paths`, and optionally `procs`:
 
-- `method` — `rm` (permanent; the target regenerates) or `trash` (recoverable). Also `project`
-  and `container`, which the script synthesizes rather than reading verbatim.
+- `method` — `rm` (permanent; the target regenerates) or `trash` (recoverable). Also `project`,
+  `container` and `rustup`, which the script synthesizes rather than reading verbatim.
 - `default` — whether it arrives pre-selected. `s` in the TUI resets to these.
 - `desc` — the *why*, shown next to the row.
 - `procs` — optional; macOS process names of the apps that rewrite this category's caches while
@@ -112,6 +112,13 @@ A category object is `icon`, `name`, `desc`, `method`, `default`, `paths`, and o
 - `kind: "android-images"` — takes its globs from `images`, not `paths`, and drops any image an
   AVD's `config.ini` still boots from. Candidates live in a field older scripts ignore so a stale
   `cdm` offers nothing rather than every image. See `docs/DESIGN.md#android-images`.
+- The other computed kinds keep that rule, with their globs in `images` or `candidates` and an
+  age in `idleDays` where they need one: `android-idle-images` (one row per image that only AVDs
+  idle for `idleDays` boot), `older-versions` (each glob is a family; all but the newest),
+  `rust-toolchains` (one row per toolchain other than the default and stable; method forced to
+  `rustup`, registered by `scan_toolchains` after every file loads) and `claude-transcripts`
+  (sessions untouched for `idleDays`; always `trash`, never pre-selected, whatever the rule
+  says). Each has its section in `docs/DESIGN.md`.
 
 Note the on-disk names are `name`/`method`/`default`, not `label`/`disposition`/`safe`. If you are
 writing docs, read a rule file first — this has been documented wrong before.

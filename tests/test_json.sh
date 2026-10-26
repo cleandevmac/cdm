@@ -298,6 +298,41 @@ EOF
 assert_eq "~/Library/Preferences" "$OA" "location path"
 assert_eq ".plist"                "$OB" "a present strip lands in the strip column"
 
+# ---- the computed kinds' fields ----------------------------------------------
+#
+# A kind that works out its offer reads its globs from "candidates" (or "images")
+# and its age from "idleDays" — never "paths", so a cdm too old to know the kind
+# offers nothing. Both records, and that a category without them emits neither.
+printf '%s\n' \
+'{ "categories": [' \
+'  { "kind": "claude-transcripts", "name": "T", "idleDays": 30,' \
+'    "candidates": ["~/.claude/projects/*", "~/b c/*"] },' \
+'  { "name": "Plain", "paths": ["~/x"] } ] }' > "$HOME/kinds.json"
+assert_eq \
+"C${US}claude-transcripts${US}${US}T${US}rm${US}0${US}
+CAND${US}~/.claude/projects/*
+CAND${US}~/b c/*
+DAYS${US}30
+C${US}paths${US}${US}Plain${US}rm${US}0${US}
+P${US}~/x" \
+"$(parse_json_file "$HOME/kinds.json")" \
+"candidates and idleDays emit CAND and DAYS records, only where present"
+
+# ...and parse_pattern_stream keeps them per category: a kind left with the
+# previous category's candidates would offer that category's paths. The kind's
+# registration is stubbed in a subshell, so the real one stays for later files.
+t_kinds() {
+    ( register_transcripts() { printf '[%s|%s|%s]' "$2" "$4" "$5"; }
+      PARSED_OK=0; parse_pattern_stream "$1" )
+}
+assert_eq "[T|~/.claude/projects/*
+~/b c/*|30]" "$(t_kinds "$HOME/kinds.json")" "a claude-transcripts rule reaches its kind with its globs and age"
+printf '%s\n' \
+'{ "categories": [' \
+'  { "kind": "claude-transcripts", "name": "A", "idleDays": 9, "candidates": ["~/a"] },' \
+'  { "kind": "claude-transcripts", "name": "B" } ] }' > "$HOME/kinds2.json"
+assert_eq "[A|~/a|9][B||]" "$(t_kinds "$HOME/kinds2.json")" "candidates and idleDays do not leak into the next category"
+
 # ---- failure modes ---------------------------------------------------------
 #
 # Both of these must terminate. There is no `timeout` on a stock Mac, so a hang

@@ -48,24 +48,31 @@ cdm
 
 ## 何を掃除するか
 
-**1. 開発キャッシュとビルド成果物** — Xcode の DerivedData と DeviceSupport、Go のビルドキャッシュとモジュールキャッシュ、npm/npx/pnpm/yarn、JS のビルドツール（Turbo、Vite、webpack、Parcel、ESLint）、Gradle、Maven、sbt/Ivy、Cargo、Python（pip、uv、poetry、ruff、mypy）、Ruby/Bundler、Bun、Deno、CocoaPods、SwiftPM、Composer、Bazel、Zig、クラウド CLI（kubectl、AWS、gcloud、Azure）、Docker buildx、JetBrains、Playwright、そして Homebrew と PlatformIO のダウンロードキャッシュ。
+**1. 開発キャッシュとビルド成果物** — Xcode の DerivedData と DeviceSupport、Go のビルドキャッシュとモジュールキャッシュ、npm/npx/pnpm/yarn、JS のビルドツール（Turbo、Vite、webpack、Parcel、ESLint）、Gradle、Maven、sbt/Ivy、Cargo、Python（pip、uv、poetry、ruff、mypy）、Ruby/Bundler、Bun、Deno、CocoaPods、SwiftPM、Composer、Bazel、Zig、クラウド CLI（kubectl、AWS、gcloud、Azure）、Docker buildx、JetBrains、Playwright、Homebrew と PlatformIO のダウンロードキャッシュ、Android Studio のキャッシュとエミュレータのスナップショット、そしてもうどの AVD も使っていない Android のシステムイメージ。
 
-**2. Electron・ブラウザ・アプリのキャッシュ** — VS Code、Claude、Slack。Chrome、Brave、Edge、Vivaldi、Arc はブラウザのプロファイルごとにスキャンします。Firefox も対象です。さらにクラッシュ／テレメトリ SDK のキャッシュ（Sentry、Crashlytics、Sparkle）。
+**2. 再ダウンロードできる、インストール済みの SDK 一式** — すべてオプトインで、各行にどう元に戻るかが書かれています。PlatformIO のインストール済みプラットフォームとツールチェーン（次の `pio run` が必要な分を取得します）、Android の NDK・CMake・SDK ソース、最新版を除くすべての Android build-tools とプラットフォーム、60 日間だれも起動していない AVD のシステムイメージ（行にその AVD の名前が出ます。イメージを入れ直すまで、その AVD は起動しません）、そして既定でも stable でもない Rust ツールチェーン（`rustup toolchain uninstall` で削除します。それを固定しているリポジトリがあれば行に表示します）。`sdkmanager`、`adb`、エミュレータ、PlatformIO 自身の `pio` が候補になることはありません。
 
-**3. プロジェクトのゴミ（リポジトリ単位でまとめて表示）** — `node_modules`、`dist`、`build`、`target`、`__pycache__`、および git で無視されているファイル。既定では無効で、`-p` を渡すと有効になります。対話的な実行では、キャッシュのスキャンが終わったあとに提案されます。
+**3. 古い Claude Code のトランスクリプト** — オプトイン。30 日間触れていないセッションを、サブエージェントやツール出力のファイルごとゴミ箱に移します。実行中のセッション、自動メモリ、設定には触れません。履歴が大きいときは、Claude Code 自身に Desktop と Cowork の古いセッションを削除させる `~/.claude/settings.json` のキー（`desktopSessionCleanupPeriodDays`）も表示します。そのファイルを `cdm` が書き換えることはありません。
 
-**4. Docker / Podman** — `system prune -af` と、buildx の各ビルダーのキャッシュに対する `buildx prune -af`（オプトイン。停止中のビルダーはそのために起動し、終わったら再び停止します）。名前付きボリュームは決して削除しません。
+**4. Electron・ブラウザ・アプリのキャッシュ** — VS Code、Claude（プレビューごとの webview キャッシュと、オプトインで Cowork の VM イメージを含む）、Slack。Chrome、Brave、Edge、Vivaldi、Arc はブラウザのプロファイルごとにスキャンします。Firefox も対象です。さらにクラッシュ／テレメトリ SDK のキャッシュ（Sentry、Crashlytics、Sparkle）。
 
-**5. 取り残されたアプリのデータ** — すでにインストールされていないアプリの Application Support、Caches、Preferences。
+**5. プロジェクトのゴミ（リポジトリ単位でまとめて表示）** — `node_modules`、`dist`、`build`、`target`、`__pycache__`、および git で無視されているファイル。対象は、リポジトリ自身が git で無視しているものだけです。既定では無効で、`-p` を渡すと有効になります。対話的な実行では、キャッシュのスキャンが終わったあとに提案されます。
 
-**再起動で空く容量。** スワップ、macOS が起動時に空にする一時フォルダ、そしてアプリが開いたままの削除済みファイルは、どのクリーナーにも削除できるファイルではありませんが、ディスクがいっぱいのときには合計で数十 GB になることがあります。それが空き容量を上回るとき、`cdm` はディスクの行の下にそのことを表示し、削除済みファイルを開いたままのアプリを挙げます。それらのアプリを終了すれば、その分は再起動せずに空きます。
+**6. Docker / Podman** — `system prune -af` と、buildx の各ビルダーのキャッシュに対する `buildx prune -af`（オプトイン。停止中のビルダーはそのために起動し、終わったら再び停止します）。名前付きボリュームは決して削除しません。
+
+**7. 取り残されたアプリのデータ** — すでにインストールされていないアプリの Application Support、Caches、Preferences。
+
+**再起動で空く容量。** スワップ、macOS が起動時に空にする一時フォルダ、そしてアプリが開いたままの削除済みファイルは、どのクリーナーにも削除できるファイルではありませんが、ディスクがいっぱいのときには合計で数十 GB になることがあります。それが空き容量を上回るとき、`cdm` はディスクの行の下とメニューの中にそのことを表示し、削除済みファイルを開いたままのアプリを挙げます。それらのアプリを終了すれば、その分は再起動せずに空きます。
 
 ## 安全性
 
 - **項目ごとの確認なしに削除されるものはありません。** 計画とサイズを確認したうえで、`y` を入力します。
 - **キャッシュは完全に削除されます** — 次のビルドで再生成されます。
-- **取り残されたアプリのデータと git で無視されているファイルはゴミ箱に入る**ので、元に戻せます。
+- **取り残されたアプリのデータ、git で無視されているファイル、古い Claude Code のトランスクリプトはゴミ箱に入る**ので、元に戻せます。
+- **インストール済みのソフトウェアを消すものは、すべて未選択で始まります** — SDK の一部、ツールチェーン、エミュレータのイメージ。各行にどう元に戻るかが書かれています。Rust のツールチェーンは `rm` ではなく `rustup` が削除します。
 - **ルールに何が書かれていても決して触れない場所:** `~/Documents`、`~/Desktop`、`~/Downloads`、`~/Pictures`、`~/.ssh`、iCloud Drive。このガードはルールエンジンより下の層にあり、ルール側から無効にすることはできません。
+- **フォルダがプロジェクトのゴミになるのは、リポジトリが git で無視している場合だけです。** `dist`、`build`、`Pods` のような名前に一致するだけでは足りません。cdm はそのディレクトリが無視されていて、*かつ*追跡されていないことを git で確かめるので、リリース用スクリプトを入れた追跡中の `build/` やコミット済みの `dist/` はそのまま残ります。
+- **`.env*` ファイルが削除の候補になることはありません。** git で無視されていても、プロジェクトのスキャンはこれらを飛ばします。秘密情報やローカル設定が入っていて、何からも再生成できないからです。
 - **アプリのサンドボックスと、Apple やシステムが所有するデータには一切触れません。**
 - インストール済みアプリの一覧は **LaunchServices** から読み取るため、prefPane やプラグインなど `.app` ではないバンドルが取り残しと誤判定されることはありません。
 - `--dry-run` は何も削除しません。
@@ -86,7 +93,7 @@ cdm
 
 クリーン後は結果を表示し、次にどうするか尋ねます: `r` 再スキャン・`b` コーヒーをおごる・`q` 終了（既定。Enter やその他のキーも同じ）。
 
-項目は大きい順に並びます。安全に再生成されるキャッシュはあらかじめ選択済みです。Maven リポジトリ、Playwright のブラウザ、クラッシュログ、プロジェクトフォルダ、取り残されたアプリのデータは未選択の状態で始まります。`s` を押すと、この既定の選択に戻ります。
+項目は大きい順に並びます。安全に再生成されるキャッシュはあらかじめ選択済みです。Maven リポジトリ、Playwright のブラウザ、クラッシュログ、インストール済みの SDK 一式、古い Claude Code のトランスクリプト、プロジェクトフォルダ、取り残されたアプリのデータは未選択の状態で始まります。`s` を押すと、この既定の選択に戻ります。
 
 ## 編集できるルール
 
@@ -102,6 +109,10 @@ cdm
 | `orphans.json` | 取り残されたアプリのデータの検出 |
 
 各カテゴリは `icon`、`name`、`desc`、`paths`、`default`（あらかじめ選択するかどうか）、`method`（`rm` は削除、`trash` はゴミ箱へ移動）を持つオブジェクトです。`--patterns <ディレクトリまたは URL>` で、自分のルールセットを `cdm` に読み込ませられます。
+
+カテゴリには `procs` も指定できます。実行中にそのキャッシュを書き戻してしまうアプリのプロセス名です（`"procs": ["Google Chrome", "Code"]`）。動いているアプリのキャッシュを消しても容量はすぐ戻ってしまうので、`cdm` は確認を求める前に、開いているものを挙げます。名前は `pgrep -x` と完全に一致する必要があります。
+
+いくつかのカテゴリは `kind` を持ち、何を候補にするかをスクリプトが判断します: `android-images`（どの AVD も起動しないシステムイメージ）、`android-idle-images`（`idleDays` の間起動されていない AVD だけが使うイメージ）、`older-versions`（各 glob がバージョンの一群で、最新版以外）、`rust-toolchains`（既定と stable 以外のツールチェーン）、`claude-transcripts`（`idleDays` の間触れていないセッション。必ずゴミ箱へ）。これらは glob を `paths` ではなく `images` か `candidates` から読むので、その kind を知らない古い `cdm` は何も候補にしません。
 
 ## オプション
 

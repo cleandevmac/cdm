@@ -21,9 +21,12 @@ leftover data from uninstalled apps, and regenerable folders in your code repos.
 What it does:
   1. Reclaims space from regenerable caches / build output (Xcode, Go, Node,
      Gradle, Maven, Cargo, Python, Homebrew, Electron & browser caches, ...).
-  2. Clears project junk in your repos (node_modules, dist, build, target,
+  2. Offers, unchecked, installed SDK pieces that download again (PlatformIO
+     toolchains, Android NDK and older build-tools, idle AVDs' system images,
+     extra Rust toolchains) and old Claude Code transcripts.
+  3. Clears project junk in your repos (node_modules, dist, build, target,
      __pycache__, or anything your .gitignore ignores).
-  3. Surfaces leftover data from apps that are no longer installed.
+  4. Surfaces leftover data from apps that are no longer installed.
 
 Everything it can clean is described by JSON "rule" files (see the rules/
 directory of the cleandevmac/cdm repo). The tool reads them from a local
@@ -32,8 +35,9 @@ folder, or downloads them, so it also runs standalone:
   curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash
 
 Nothing is deleted without an itemized confirmation. Caches / build output are
-removed permanently (they regenerate); orphaned app data and git-ignored files
-are moved to the Trash so they can be restored. --dry-run only looks.
+removed permanently (they regenerate); orphaned app data, git-ignored files and
+old Claude Code transcripts are moved to the Trash so they can be restored; a
+Rust toolchain is removed by rustup itself. --dry-run only looks.
 
 <a id="frame-literals"></a>
 ## The frame is built from literals, not escape text
@@ -268,20 +272,70 @@ Three parts, each measured, none deleted:
   open file on the volume. lsof prints one record per *handle*, and a single
   deleted plist cache was seen open in dozens of processes at once, so each
   file counts once, by device and inode. The three biggest holders are named,
-  but only once the part reaches 1 GiB: below that they are daemons nobody can
-  quit (`linkd`, `sharingd`). lsof sees only the user's own processes, so the
-  figure is a floor.
+  but only once the part reaches 1 GiB (`RESTART_HOLDERS_MIN_KB`): below that
+  they are daemons nobody can quit (`linkd`, `sharingd`). lsof sees only the
+  user's own processes, so the figure is a floor.
 
-The line prints only when the total is at least 1 GiB **and** at least the free
-space — the point past which a restart gives back more than any clean can. A
-healthy disk (5 GB of swap, 54 GB free) gets no line. cdm restarts nothing and
-quits nothing; the held-open part is the one a user can free without a
-restart, by quitting the apps it names.
+The line prints only when the total is at least 100 MiB (`RESTART_NOTE_MIN_KB`)
+**and** at least the free space — the point past which a restart gives back
+more than any clean can. Since the second condition already confines it to a
+nearly full disk, the floor only keeps it from reporting crumbs: on a Mac with
+121 MB free, 300 MB that a restart releases is worth a line. (It was 1 GiB, and
+the holders shared it; they keep 1 GiB as a constant of their own, because a
+lower floor would start naming daemons as apps to quit.) A healthy disk (5 GB
+of swap, 54 GB free) gets no line. cdm restarts nothing and quits nothing; the
+held-open part is the one a user can free without a restart, by quitting the
+apps it names.
+
+The menu repeats the line in a dim row under its status row. Printed only
+above the scan, it vanished behind the menu's alternate screen for exactly the
+stretch in which the user decides what to clean — the moment it is for. It is
+kept in `RESTART_NOTE`, so a frame formats it without measuring anything, and
+`refresh_restart_note` measures again on a rescan after a clean, which moved
+the free space the line is compared against. It is one more row of chrome (see
+[the chrome note](#menu-chrome)), and the first a short window sheds.
 
 The three cost about half a second together (lsof itself 0.1 s), and a part
 that cannot be measured stays at 0 rather than failing the line. Like
-`disk_stats`, `restart_stats` sets globals and is called from the parent shell;
-`restart_line` formats only.
+`disk_stats`, `restart_stats` and `refresh_restart_note` set globals and are
+called from the parent shell; `restart_line` formats only.
+
+<a id="claude-history"></a>
+## Claude Code's history: a note, not a clean
+
+Claude Code keeps each session's transcript under `~/.claude/projects/` and
+deletes it itself once it is older than `cleanupPeriodDays` (30 by default) —
+except the transcripts of sessions started or last continued in Claude Desktop
+or Cowork, which it keeps at any age unless `desktopSessionCleanupPeriodDays`
+is set (user or managed settings only, Claude Code 2.1.248 or later). A Mac
+that lives in Claude Desktop grows that folder without bound: 10.6 GB here,
+where every transcript older than 30 days came from Claude Desktop.
+
+The fix is Claude Code's own setting, so cdm prints it instead of applying it.
+Under the disk line, `claude_history_stats` and `claude_history_line` say how
+big the history is, how many sessions outlived the limit, and the exact key:
+
+    💬 Claude Code: 10.60 GB of session history in ~/.claude/projects, 1218 transcripts older than 30 days.
+        ↳ Claude Code keeps Claude Desktop and Cowork sessions at any age; to have it delete them after 30 days too, add "desktopSessionCleanupPeriodDays": 30 to ~/.claude/settings.json
+
+cdm never edits that file. The line needs all three of these, checked cheapest
+first:
+
+- the key is not in `settings.json`. Once it is, Claude Code ages the
+  transcripts out itself at its next start, and the line has nothing to add.
+- some session transcript (`<uuid>.jsonl`, counted the way
+  [register_transcripts](#claude-transcripts) counts them) is older than the
+  limit — the file's own `cleanupPeriodDays` when it sets one, else 30. That is
+  the evidence: whatever outlived Claude Code's own limit is something Claude
+  Code is keeping. It also keeps the line honest where the limit is enforced
+  some other way (managed settings, HIPAA): nothing outlives it there, so the
+  line never shows.
+- the folder holds at least 1 GiB (`CLAUDE_NOTE_MIN_KB`). Its `du` — 0.8 s over
+  16,000 files here — runs only once the first two have passed.
+
+`CLAUDE_CONFIG_DIR` moves both the history and the settings file, for cdm as for
+Claude Code. The settings are read with grep rather than parsed: the question is
+only whether a key is there, and a false match can only silence advice.
 
 <a id="fd-3"></a>
 ## Keypresses come from fd 3, never fd 0
@@ -347,6 +401,7 @@ Records are newline-separated. Field layout per record type:
   P<US>path | D<US>dirname | E<US>engine                           (paths / dirs / engines)
   PROC<US>process-name                                             (running-app check)
   IMG<US>glob                                                      (android-images candidates)
+  CAND<US>glob | DAYS<US>n                                         (a computed kind's candidates / idleDays)
   L<US>path<US>strip | SKIP<US>prefix | SHARED<US>id                (orphan config)
   FILE<US>name | ORPHAN<US>name | ERR<US>message
 ---------------------------------------------------------------------------
@@ -412,7 +467,40 @@ fetched from raw `main`, so an older saved copy of `cdm` will meet this rule.
 It does not know the kind, falls through to plain `register_paths` on
 `paths` — and, were the globs there, would offer every image including the
 ones in use. With them in a field it has never heard of, it registers
-nothing. `tests/test_android_images.sh` pins that fallback too.
+nothing. `tests/test_android_images.sh` pins that fallback too. Every kind
+added since — [android-idle-images](#android-idle-images),
+[older-versions](#older-versions), [rust-toolchains](#rust-toolchains) and
+[claude-transcripts](#claude-transcripts) — keeps the same rule, with its globs
+in `images` or `candidates`.
+
+<a id="android-idle-images"></a>
+## System images of idle AVDs
+
+`android-images` never offers an image an AVD boots from. But an AVD nobody has
+started in months pins its image all the same: here, the 8.1 GB Android TV
+image, booted only by an AVD last run 81 days ago. `android-idle-images` offers
+exactly those — an image some AVD boots, when none of the AVDs that boot it has
+started in `idleDays` (60). Without it those AVDs keep their apps and data but
+will not boot until the image is reinstalled, so each row names them and when
+they last ran, and its description gives the sdkmanager package id
+(`system-images;android-34;android-tv;arm64-v8a`) to reinstall it with.
+
+One row per image, not one for all: each is GBs, each is tied to different
+AVDs, and the menu selects rows, not paths. An image no AVD boots stays the
+`android-images` row's; one that a recently started AVD boots is never offered,
+however idle the others on it are.
+
+"When an AVD last ran" is `avd_last_started`: the newest mtime among the files
+in its folder — the emulator rewrites hardware-qemu.ini, its userdata image and
+emulator-user.ini on every run — except `config.ini`, which Android Studio
+rewrites without booting anything (here, seven weeks after the last boot). An
+AVD holding nothing but config.ini has never run and is as old as that file; an
+AVD whose age cannot be read counts as in use. A typical AVD is found twice (as
+`<home>/<name>.avd` and through `<name>.ini`'s `path=`), which only ever keeps
+more images, but its name is given once.
+
+A missing or non-numeric `idleDays` offers nothing. The guard is not
+decoration: the age goes through `$(( ))`, where "6O" aborts the whole script.
 
 <a id="buildx-builders"></a>
 ## buildx builders' caches
@@ -459,6 +547,38 @@ and `-`, led by a letter or digit, so never a flag. As in
 never a bracket range. An older buildx without `--format` fails the command, and
 the builders are simply not offered.
 
+<a id="rust-toolchains"></a>
+## Rust toolchains
+
+rustup keeps every toolchain it installed under `~/.rustup/toolchains`, 1.5 to
+2.1 GB each, and a version pinned for one project outlives the project. The
+`rust-toolchains` kind offers, one unchecked row each, every toolchain that is
+neither the default (settings.toml's `default_toolchain`, or the toolchain a
+default given as a bare channel installs) nor `stable-*`. Also never offered: a
+linked toolchain (a symlink, from `rustup toolchain link` — someone's own build,
+with nothing to download it from) and a name rustup would not write.
+
+The clean is `rustup toolchain uninstall <name>`, never `rm`, so rustup's own
+records stay true; the kind forces the method whatever the rule says. rustup
+runs with `RUSTUP_HOME` set to the home the folder was found in, so what was
+sized is what is removed. The name comes from a directory, so
+`toolchain_name_ok` holds it to rustup's shape the way
+[buildx_name_ok](#buildx-builders) does, and the folder still has to pass
+`is_safe_target` first. With no rustup on PATH or in Cargo's `bin`, nothing is
+offered — taking one out by hand is exactly what the method exists to avoid.
+
+A toolchain a repo pins comes back on that repo's next build, so the row names
+every repo that pins it. A pin is a `rust-toolchain.toml` channel (or a legacy
+`rust-toolchain` file's bare first line), found under the project scan's roots,
+to its depth, with its prune list and its junk dir names pruned — a crate
+vendored under `node_modules` pins nothing of yours — and every
+`rustup override` in settings.toml. A channel matches the way rustup resolves
+it: `1.98` is `1.98-aarch64-apple-darwin`, `nightly` is not
+`nightly-2026-01-01-aarch64-apple-darwin`. That search walks the home tree (one
+to two seconds here), so it runs only once some toolchain is offered, and from
+`scan_toolchains`, after every rule file has loaded: the scan config lives in
+project-junk.json, which loads after dev-caches.json.
+
 <a id="glob-expansion"></a>
 ## Glob expansion in register_paths
 
@@ -472,6 +592,68 @@ IFS is emptied so the unquoted $pat still globs but does NOT
 word-split — patterns like "~/Library/Application Support/*/Code
 Cache" contain spaces, and splitting them matches nothing at all.
 An unmatched glob expands to itself, which the -e test discards.
+`_glob_matches` is the same expansion for the computed kinds, returning
+through `_GM` rather than `$(...)` so it forks nothing either.
+
+<a id="older-versions"></a>
+## All but the newest version
+
+Android's `build-tools/` and `platforms/` keep every version ever installed —
+five build-tools here, 190 MB each — and Gradle (or Android Studio) downloads a
+missing one when a project asks for it. So the newest of each is worth keeping,
+since a new project uses it, and the rest are re-downloads. The `older-versions`
+kind takes globs in `candidates`; each glob's matches are one family, and every
+member but the newest is offered. A family of one offers nothing.
+
+`newest_version` compares versions, not strings. Numeric fields compare as
+numbers — eight fields, each zero-padded to 20 digits, a missing one counting
+as 0 — so 10 is above 9, android-36.1 above android-36 and android-37.0 above
+android-36.1 (Android 16 added minor API levels). A release outranks its own
+pre-release: a name with anything after its version (36.0.0-rc1) gets a lower
+marker than one without (36.0.0). A name with no digits, a codename preview, is
+oldest. Not `sort -V`, which the sort on older macOS releases does not have.
+
+The NDK, CMake and SDK sources are a plain paths row instead, offering every
+version: only a native build needs the NDK or CMake (the Android Gradle plugin,
+4.2 and later, installs the version a build asks for once the licenses are
+accepted), and nothing builds from sources. `cmdline-tools` (sdkmanager, the way
+back for everything else), `platform-tools` (adb) and `emulator` are offered by
+no rule.
+
+<a id="claude-transcripts"></a>
+## Old Claude Code transcripts
+
+The opt-in half of [the history note](#claude-history): `claude-transcripts`
+offers, in one unchecked row, the sessions whose transcript has not changed in
+`idleDays` (30), for the Trash. A transcript is the one record of a
+conversation. It does not regenerate, a trashed session no longer resumes or
+reopens (in Claude Desktop too), and people quote from them — so this kind is
+fenced harder than any other:
+
+- **Always the Trash, never pre-selected**, whatever the rule's `method` and
+  `default` say. Rules are fetched from raw `main` at run time; no rules edit
+  may make `-y` delete a transcript.
+- **Sessions only.** A candidate is `<project>/<id>.jsonl` whose `<id>` is a
+  UUID — 36 characters of ASCII hex and dashes, checked in awk under
+  `LC_ALL=C` — offered with its `<id>/` folder of subagent transcripts and tool
+  results, and nothing else. Auto memory's `memory/` cannot match, nor can a
+  set-aside copy (`<id>.orphaned-….jsonl`), which Claude Code sweeps itself.
+- **Never a running session.** `sessions/<pid>.json`, beside `projects/`,
+  names each running session's id; a listed id is skipped whether or not its
+  process is still alive, since a crash leaves the file until the next launch.
+- **Age is the transcript's mtime.** Claude Code appends to it on every
+  message, so it is when the session last ran.
+
+It is one find and one awk, not a loop: the first version appended each match
+to a bash string, and on 1,218 sessions that took six seconds (bash 3.2 copies
+the whole string on every append). The row's size had the same problem, see
+[#sizing](#sizing). The candidates are the project folders,
+`~/.claude/projects/*`, in `candidates` — so a cdm too old to know the kind
+offers nothing.
+
+Until this row, the READMEs and the landing page promised that cdm never
+touches `~/.claude`. That still holds for everything in it but old transcripts,
+and for those only when the user ticks the row.
 
 <a id="project-scanning"></a>
 ## Project-junk scanning
@@ -706,6 +888,19 @@ second case, and over ASCII the range and the class accept the same characters
 under every collation. is_ascii is the guard doing the locale-proofing, so
 removing IT is the mutation tests/mutate.sh asserts on.
 
+<a id="sizing"></a>
+## One du per category
+
+compute_sizes_write used to `du` each path of a category on its own. A row of a
+thousand paths — old transcripts — cost a thousand forks: 10.8 s here, against
+0.1 s for one `du -sk` over the whole list. `paths_kb` hands the list to du
+through `xargs -0`, which also splits one too long for a single command line.
+The total differs in one way, on purpose: du counts a hard-linked file once per
+run, so a file linked into two paths of one row is no longer counted twice. An
+empty list must never reach du, whose bare `du -sk` sizes the current
+directory; macOS's xargs runs nothing on empty input anyway, so that guard is
+for an xargs that does.
+
 <a id="sort-by-size"></a>
 ## sort_by_size
 
@@ -815,8 +1010,9 @@ terminal on *every* repaint.
 <a id="menu-chrome"></a>
 ## The menu's fixed chrome
 
-Chrome is title, status, keys, ↑-scroll, ↓-scroll, description; every other
-terminal row goes to the item list. Item rows and the description are clipped
+Chrome is title, status, the [restart note](#restart-estimate) when there is
+one, keys, ↑-scroll, ↓-scroll, description; every other terminal row goes to the
+item list. Item rows and the description are clipped
 to the terminal width and the keys line is tier-fitted to it, so each
 is one physical line and this count is exact — the list fills the screen, and
 the frame is exactly `rows` lines tall (the last one unterminated; see the
@@ -828,7 +1024,8 @@ narrowest tier wraps, and the list must still not overrun the screen.
 ## Short windows shed chrome
 
 A window too short to seat the full chrome *and* a usable list sheds the
-optional chrome — the description first, then the two scroll indicators —
+optional chrome — the restart note first, then the description, then the two
+scroll indicators —
 rather than emit a frame taller than the screen. Overrunning would scroll
 the terminal on every repaint, which is far worse than a missing hint line:
 it stacks a copy of the menu into the scrollback each time. Reachable now

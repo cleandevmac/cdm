@@ -50,21 +50,26 @@ Make sure `~/.local/bin` is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH
 
 **1. Dev caches & build artifacts** — Xcode DerivedData and DeviceSupport, Go build & module cache, npm/npx/pnpm/yarn, JS build tools (Turbo, Vite, webpack, Parcel, ESLint), Gradle, Maven, sbt/Ivy, Cargo, Python (pip, uv, poetry, ruff, mypy), Ruby/Bundler, Bun, Deno, CocoaPods, SwiftPM, Composer, Bazel, Zig, cloud CLIs (kubectl, AWS, gcloud, Azure), Docker buildx, JetBrains, Playwright, the Homebrew and PlatformIO download caches, Android Studio caches and emulator snapshots, and Android system images no AVD uses any more.
 
-**2. Electron, browser & app caches** — VS Code, Claude (including per-preview webview caches and, opt-in, the Cowork VM image), Slack; Chrome, Brave, Edge, Vivaldi and Arc scanned per browser profile; Firefox; and crash/telemetry SDK caches (Sentry, Crashlytics, Sparkle).
+**2. Installed SDK pieces that download again** — all opt-in, each row saying how it comes back: PlatformIO's installed platforms and toolchains (the next `pio run` fetches what it needs); the Android NDK, CMake and SDK sources; every Android build-tools and platform version but the newest; the system image of an AVD nobody has started in 60 days (the row names the AVD, which will not boot until the image is reinstalled); and every Rust toolchain other than your default and stable, removed with `rustup toolchain uninstall` (the row names any repo that pins it). `sdkmanager`, `adb`, the emulator and PlatformIO's own `pio` are never offered.
 
-**3. Project junk, grouped per repo** — `node_modules`, `dist`, `build`, `target`, `__pycache__`, and git-ignored files. Only ever what the repo itself git-ignores. Off by default; pass `-p` to enable it. Interactive runs offer it after the cache scan finishes.
+**3. Old Claude Code transcripts** — opt-in: sessions untouched for 30 days, with their subagent and tool-output files, go to the Trash. Running sessions, auto memory and settings are never touched. When the history is large, `cdm` also prints the `~/.claude/settings.json` key (`desktopSessionCleanupPeriodDays`) that makes Claude Code age out its Desktop and Cowork sessions itself — it never edits that file.
 
-**4. Docker / Podman** — `system prune -af`, plus `buildx prune -af` on each buildx builder's cache (a stopped builder is started for it and stopped again), opt-in. Named volumes are never deleted.
+**4. Electron, browser & app caches** — VS Code, Claude (including per-preview webview caches and, opt-in, the Cowork VM image), Slack; Chrome, Brave, Edge, Vivaldi and Arc scanned per browser profile; Firefox; and crash/telemetry SDK caches (Sentry, Crashlytics, Sparkle).
 
-**5. Orphaned app data** — Application Support, Caches and Preferences belonging to apps that are no longer installed.
+**5. Project junk, grouped per repo** — `node_modules`, `dist`, `build`, `target`, `__pycache__`, and git-ignored files. Only ever what the repo itself git-ignores. Off by default; pass `-p` to enable it. Interactive runs offer it after the cache scan finishes.
 
-**What a restart would free.** Swap, the temp folders macOS empties at boot, and files deleted while an app still holds them open are not files any cleaner can delete — yet on a full disk they can add up to tens of GB. When they come to more than the disk has free, `cdm` says so under the disk line and names the apps holding deleted files: quitting those frees that part without a restart.
+**6. Docker / Podman** — `system prune -af`, plus `buildx prune -af` on each buildx builder's cache (a stopped builder is started for it and stopped again), opt-in. Named volumes are never deleted.
+
+**7. Orphaned app data** — Application Support, Caches and Preferences belonging to apps that are no longer installed.
+
+**What a restart would free.** Swap, the temp folders macOS empties at boot, and files deleted while an app still holds them open are not files any cleaner can delete — yet on a full disk they can add up to tens of GB. When they come to more than the disk has free, `cdm` says so under the disk line, and again in the menu, and names the apps holding deleted files: quitting those frees that part without a restart.
 
 ## Safety
 
 - **Nothing is deleted without an itemized confirmation.** You see the plan and the sizes, then type `y`.
 - **Caches are deleted permanently** — they regenerate on the next build.
-- **Orphaned app data and git-ignored files go to the Trash**, so they are recoverable.
+- **Orphaned app data, git-ignored files and old Claude Code transcripts go to the Trash**, so they are recoverable.
+- **Anything that removes installed software starts unchecked** — SDK pieces, toolchains, emulator images — and its row says how it comes back. A Rust toolchain is removed by `rustup`, never by `rm`.
 - **Never touched regardless of what the rules say:** `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`, `~/.ssh`, and iCloud Drive. This guard sits below the rule engine — a rule cannot opt out of it.
 - **A folder is only project junk if your repo git-ignores it.** Matching a name like `dist`, `build` or `Pods` is not enough — cdm verifies with git that the directory is ignored *and* untracked, so a tracked `build/` of release scripts or a committed `dist/` is left alone.
 - **`.env*` files are never offered for deletion.** The project scan skips them even though they're git-ignored — they hold secrets and local config nothing regenerates.
@@ -88,7 +93,7 @@ Make sure `~/.local/bin` is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH
 
 After a clean it prints the receipt and asks what next: `r` rescan · `b` buy me a coffee · `q` quit (the default — Enter or any other key does the same).
 
-Items are sorted biggest-first. Safe regenerable caches are pre-selected; the Maven repository, Playwright browsers, crash logs, project folders and orphaned app data all start unchecked — `s` resets to that default selection.
+Items are sorted biggest-first. Safe regenerable caches are pre-selected; the Maven repository, Playwright browsers, crash logs, installed SDK pieces, old Claude Code transcripts, project folders and orphaned app data all start unchecked — `s` resets to that default selection.
 
 ## Editable rules
 
@@ -106,6 +111,8 @@ Targets live in JSON under `rules/`, not in code. Add or remove paths by editing
 Each category is an object with `icon`, `name`, `desc`, `paths`, `default` (pre-selected or not) and `method` (`rm` to delete, `trash` to move to the Trash). Point `cdm` at your own set with `--patterns <dir-or-url>`.
 
 A category may also carry `procs` — the process names of apps that would rewrite those caches while running (`"procs": ["Google Chrome", "Code"]`). `cdm` names any that are open before asking you to confirm, since clearing a cache under its own app just hands the space straight back. Names must match `pgrep -x` exactly.
+
+A few categories set a `kind`, and the script works out what they offer: `android-images` (system images no AVD boots), `android-idle-images` (images only AVDs idle for `idleDays` boot), `older-versions` (each glob is a family of versions; all but the newest), `rust-toolchains` (toolchains other than the default and stable) and `claude-transcripts` (sessions untouched for `idleDays`, always to the Trash). They take their globs from `images` or `candidates`, never `paths`, so a `cdm` too old to know the kind offers nothing.
 
 ## Options
 
