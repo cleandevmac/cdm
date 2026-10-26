@@ -48,15 +48,17 @@ cdm
 
 ## 它清理什么
 
-**1. 开发缓存与构建产物** — Xcode 的 DerivedData 和 DeviceSupport、Go 的构建与模块缓存、npm/npx/pnpm/yarn、JS 构建工具（Turbo、Vite、webpack、Parcel、ESLint）、Gradle、Maven、sbt/Ivy、Cargo、Python（pip、uv、poetry、ruff、mypy）、Ruby/Bundler、Bun、Deno、CocoaPods、SwiftPM、Composer、Bazel、Zig、云 CLI（kubectl、AWS、gcloud、Azure）、Docker buildx、JetBrains、Playwright，以及 Homebrew 的下载缓存。
+**1. 开发缓存与构建产物** — Xcode 的 DerivedData 和 DeviceSupport、Go 的构建与模块缓存、npm/npx/pnpm/yarn、JS 构建工具（Turbo、Vite、webpack、Parcel、ESLint）、Gradle、Maven、sbt/Ivy、Cargo、Python（pip、uv、poetry、ruff、mypy）、Ruby/Bundler、Bun、Deno、CocoaPods、SwiftPM、Composer、Bazel、Zig、云 CLI（kubectl、AWS、gcloud、Azure）、Docker buildx、JetBrains、Playwright，以及 Homebrew 和 PlatformIO 的下载缓存。
 
 **2. Electron、浏览器与应用缓存** — VS Code、Claude、Slack；Chrome、Brave、Edge、Vivaldi 和 Arc 会按浏览器配置文件分别扫描；Firefox；以及崩溃／遥测 SDK 的缓存（Sentry、Crashlytics、Sparkle）。
 
 **3. 项目垃圾，按仓库分组** — `node_modules`、`dist`、`build`、`target`、`__pycache__`，以及被 git 忽略的文件。默认关闭，传入 `-p` 启用。交互式运行时，会在缓存扫描结束后询问你是否要扫描。
 
-**4. Docker / Podman** — `system prune -af`，需要主动选择。具名卷永远不会被动到。
+**4. Docker / Podman** — `system prune -af`，以及对每个 buildx builder 的缓存执行 `buildx prune -af`（已停止的 builder 会为此启动，完成后再停止），需要主动选择。具名卷永远不会被删除。
 
 **5. 残留的应用数据** — 属于那些已经卸载的应用的 Application Support、Caches 和 Preferences。
+
+**重启能释放多少空间。** 交换空间（swap）、macOS 开机时清空的临时文件夹，以及仍被应用打开着的已删除文件，都不是任何清理工具能删除的文件；磁盘快满时，它们加起来可能有几十 GB。当它们超过剩余空间时，`cdm` 会在磁盘那一行下面说明，并列出仍打开着已删除文件的应用：退出这些应用，不用重启就能释放这一部分。
 
 ## 安全性
 

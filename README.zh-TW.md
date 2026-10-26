@@ -48,15 +48,17 @@ cdm
 
 ## 它會清理什麼
 
-**1. 開發快取與建置產物** — Xcode 的 DerivedData 與 DeviceSupport、Go 的建置與模組快取、npm/npx/pnpm/yarn、JS 建置工具（Turbo、Vite、webpack、Parcel、ESLint）、Gradle、Maven、sbt/Ivy、Cargo、Python（pip、uv、poetry、ruff、mypy）、Ruby/Bundler、Bun、Deno、CocoaPods、SwiftPM、Composer、Bazel、Zig、雲端 CLI（kubectl、AWS、gcloud、Azure）、Docker buildx、JetBrains、Playwright，以及 Homebrew 的下載快取。
+**1. 開發快取與建置產物** — Xcode 的 DerivedData 與 DeviceSupport、Go 的建置與模組快取、npm/npx/pnpm/yarn、JS 建置工具（Turbo、Vite、webpack、Parcel、ESLint）、Gradle、Maven、sbt/Ivy、Cargo、Python（pip、uv、poetry、ruff、mypy）、Ruby/Bundler、Bun、Deno、CocoaPods、SwiftPM、Composer、Bazel、Zig、雲端 CLI（kubectl、AWS、gcloud、Azure）、Docker buildx、JetBrains、Playwright，以及 Homebrew 與 PlatformIO 的下載快取。
 
 **2. Electron、瀏覽器與應用程式快取** — VS Code、Claude、Slack；Chrome、Brave、Edge、Vivaldi 與 Arc 會依瀏覽器設定檔分別掃描；Firefox；以及當機／遙測 SDK 的快取（Sentry、Crashlytics、Sparkle）。
 
 **3. 專案垃圾，依儲存庫分組** — `node_modules`、`dist`、`build`、`target`、`__pycache__`，以及被 git 忽略的檔案。預設關閉，加上 `-p` 才會啟用。互動式執行時，會在快取掃描結束後主動詢問你。
 
-**4. Docker / Podman** — `system prune -af`，需自行選擇啟用。具名磁碟區永遠不會被動到。
+**4. Docker / Podman** — `system prune -af`，以及對每個 buildx builder 的快取執行 `buildx prune -af`（已停止的 builder 會為此啟動，完成後再停止），需自行選擇啟用。具名磁碟區永遠不會被刪除。
 
 **5. 殘留的應用程式資料** — 屬於那些已經不再安裝的應用程式的 Application Support、Caches 與 Preferences。
+
+**重新開機能釋放多少空間。** 交換空間（swap）、macOS 開機時清空的暫存資料夾，以及仍被應用程式開啟著的已刪除檔案，都不是任何清理工具能刪除的檔案；磁碟快滿時，它們加起來可能有數十 GB。當它們超過剩餘空間時，`cdm` 會在磁碟那一行下方說明，並列出仍開啟著已刪除檔案的應用程式：結束這些應用程式，不必重新開機就能釋放這一部分。
 
 ## 安全性
 

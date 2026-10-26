@@ -48,15 +48,17 @@ cdm
 
 ## 何を掃除するか
 
-**1. 開発キャッシュとビルド成果物** — Xcode の DerivedData と DeviceSupport、Go のビルドキャッシュとモジュールキャッシュ、npm/npx/pnpm/yarn、JS のビルドツール（Turbo、Vite、webpack、Parcel、ESLint）、Gradle、Maven、sbt/Ivy、Cargo、Python（pip、uv、poetry、ruff、mypy）、Ruby/Bundler、Bun、Deno、CocoaPods、SwiftPM、Composer、Bazel、Zig、クラウド CLI（kubectl、AWS、gcloud、Azure）、Docker buildx、JetBrains、Playwright、そして Homebrew のダウンロードキャッシュ。
+**1. 開発キャッシュとビルド成果物** — Xcode の DerivedData と DeviceSupport、Go のビルドキャッシュとモジュールキャッシュ、npm/npx/pnpm/yarn、JS のビルドツール（Turbo、Vite、webpack、Parcel、ESLint）、Gradle、Maven、sbt/Ivy、Cargo、Python（pip、uv、poetry、ruff、mypy）、Ruby/Bundler、Bun、Deno、CocoaPods、SwiftPM、Composer、Bazel、Zig、クラウド CLI（kubectl、AWS、gcloud、Azure）、Docker buildx、JetBrains、Playwright、そして Homebrew と PlatformIO のダウンロードキャッシュ。
 
 **2. Electron・ブラウザ・アプリのキャッシュ** — VS Code、Claude、Slack。Chrome、Brave、Edge、Vivaldi、Arc はブラウザのプロファイルごとにスキャンします。Firefox も対象です。さらにクラッシュ／テレメトリ SDK のキャッシュ（Sentry、Crashlytics、Sparkle）。
 
 **3. プロジェクトのゴミ（リポジトリ単位でまとめて表示）** — `node_modules`、`dist`、`build`、`target`、`__pycache__`、および git で無視されているファイル。既定では無効で、`-p` を渡すと有効になります。対話的な実行では、キャッシュのスキャンが終わったあとに提案されます。
 
-**4. Docker / Podman** — `system prune -af`（オプトイン）。名前付きボリュームには一切触れません。
+**4. Docker / Podman** — `system prune -af` と、buildx の各ビルダーのキャッシュに対する `buildx prune -af`（オプトイン。停止中のビルダーはそのために起動し、終わったら再び停止します）。名前付きボリュームは決して削除しません。
 
 **5. 取り残されたアプリのデータ** — すでにインストールされていないアプリの Application Support、Caches、Preferences。
+
+**再起動で空く容量。** スワップ、macOS が起動時に空にする一時フォルダ、そしてアプリが開いたままの削除済みファイルは、どのクリーナーにも削除できるファイルではありませんが、ディスクがいっぱいのときには合計で数十 GB になることがあります。それが空き容量を上回るとき、`cdm` はディスクの行の下にそのことを表示し、削除済みファイルを開いたままのアプリを挙げます。それらのアプリを終了すれば、その分は再起動せずに空きます。
 
 ## 安全性
 

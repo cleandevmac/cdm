@@ -48,15 +48,17 @@ Asegúrate de que `~/.local/bin` esté en tu `PATH` (`export PATH="$HOME/.local/
 
 ## Qué limpia
 
-**1. Cachés de desarrollo y artefactos de compilación** — DerivedData y DeviceSupport de Xcode, caché de compilación y de módulos de Go, npm/npx/pnpm/yarn, herramientas de build de JS (Turbo, Vite, webpack, Parcel, ESLint), Gradle, Maven, sbt/Ivy, Cargo, Python (pip, uv, poetry, ruff, mypy), Ruby/Bundler, Bun, Deno, CocoaPods, SwiftPM, Composer, Bazel, Zig, CLIs de nube (kubectl, AWS, gcloud, Azure), Docker buildx, JetBrains, Playwright y la caché de descargas de Homebrew.
+**1. Cachés de desarrollo y artefactos de compilación** — DerivedData y DeviceSupport de Xcode, caché de compilación y de módulos de Go, npm/npx/pnpm/yarn, herramientas de build de JS (Turbo, Vite, webpack, Parcel, ESLint), Gradle, Maven, sbt/Ivy, Cargo, Python (pip, uv, poetry, ruff, mypy), Ruby/Bundler, Bun, Deno, CocoaPods, SwiftPM, Composer, Bazel, Zig, CLIs de nube (kubectl, AWS, gcloud, Azure), Docker buildx, JetBrains, Playwright y las cachés de descargas de Homebrew y PlatformIO.
 
 **2. Cachés de Electron, navegadores y aplicaciones** — VS Code, Claude, Slack; Chrome, Brave, Edge, Vivaldi y Arc analizados por perfil de navegador; Firefox; y cachés de SDK de fallos y telemetría (Sentry, Crashlytics, Sparkle).
 
 **3. Basura de proyectos, agrupada por repositorio** — `node_modules`, `dist`, `build`, `target`, `__pycache__` y archivos ignorados por git. Desactivado por defecto; usa `-p` para habilitarlo. Las ejecuciones interactivas te lo ofrecen al terminar el escaneo de cachés.
 
-**4. Docker / Podman** — `system prune -af`, opcional. Los volúmenes con nombre nunca se tocan.
+**4. Docker / Podman** — `system prune -af`, y `buildx prune -af` sobre la caché de cada builder de buildx (un builder detenido se arranca para ello y se vuelve a detener), opcional. Los volúmenes con nombre nunca se borran.
 
 **5. Datos de aplicaciones huérfanos** — Application Support, Caches y Preferences que pertenecen a aplicaciones que ya no están instaladas.
+
+**Lo que liberaría un reinicio.** El swap, las carpetas temporales que macOS vacía al arrancar y los archivos borrados que una app aún mantiene abiertos no son archivos que ningún limpiador pueda borrar, y en un disco lleno pueden sumar decenas de GB. Cuando superan el espacio libre, `cdm` lo indica bajo la línea del disco y nombra las apps que retienen archivos borrados: cerrarlas libera esa parte sin reiniciar.
 
 ## Seguridad
 

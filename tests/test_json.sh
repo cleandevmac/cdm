@@ -343,4 +343,14 @@ read_c_record "$IDX_LINE"
 assert_eq "FILE" "$R_TYP" "index.json's first record is a FILE"
 assert_ok "every file index.json lists exists" test -r "$CDM_ROOT/rules/$R1"
 
+# ~/OrbStack is not a folder on this disk but OrbStack's NFS view of its VM:
+# every container's filesystem, every volume, every Linux machine. The project
+# scan walks ~ six levels deep, so without this name in 'prune' it wanders in —
+# slowly — and a repo inside a container puts that container's node_modules in
+# the menu. A rules edit is live the moment it merges, so pin the name here.
+SCAN_PRUNE=(); PARSED_OK=0
+parse_pattern_stream "$CDM_ROOT/rules/project-junk.json"
+case " ${SCAN_PRUNE[*]-} " in *" OrbStack "*) t_orb=pruned ;; *) t_orb=walked ;; esac
+assert_eq "pruned" "$t_orb" "the shipped scan never walks into ~/OrbStack"
+
 test_summary

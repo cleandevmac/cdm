@@ -450,6 +450,16 @@
       ]
     },
     {
+      "icon": "🔌",
+      "name": "PlatformIO download cache",
+      "method": "rm",
+      "default": true,
+      "desc": "Downloaded package archives & registry cache ('pio system prune --cache') — re-fetched on demand. Installed toolchains & libraries are untouched.",
+      "paths": [
+        "~/.platformio/.cache"
+      ]
+    },
+    {
       "icon": "🤖",
       "name": "Android build caches",
       "method": "rm",

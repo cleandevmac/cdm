@@ -62,15 +62,17 @@ cdm
 
 ## ما الذي ينظّفه
 
-**1. ذواكر التطوير المؤقتة ومخرجات البناء** — مجلدا DerivedData و DeviceSupport في Xcode، وذاكرة بناء ووحدات Go، و npm/npx/pnpm/yarn، وأدوات بناء JavaScript‏ (Turbo و Vite و webpack و Parcel و ESLint)، و Gradle، و Maven، و sbt/Ivy، و Cargo، و Python‏ (pip و uv و poetry و ruff و mypy)، و Ruby/Bundler، و Bun، و Deno، و CocoaPods، و SwiftPM، و Composer، و Bazel، و Zig، وأدوات السحابة‏ (kubectl و AWS و gcloud و Azure)، و Docker buildx، و JetBrains، و Playwright، وذاكرة تنزيلات Homebrew.
+**1. ذواكر التطوير المؤقتة ومخرجات البناء** — مجلدا DerivedData و DeviceSupport في Xcode، وذاكرة بناء ووحدات Go، و npm/npx/pnpm/yarn، وأدوات بناء JavaScript‏ (Turbo و Vite و webpack و Parcel و ESLint)، و Gradle، و Maven، و sbt/Ivy، و Cargo، و Python‏ (pip و uv و poetry و ruff و mypy)، و Ruby/Bundler، و Bun، و Deno، و CocoaPods، و SwiftPM، و Composer، و Bazel، و Zig، وأدوات السحابة‏ (kubectl و AWS و gcloud و Azure)، و Docker buildx، و JetBrains، و Playwright، وذواكر تنزيلات Homebrew و PlatformIO.
 
 **2. ذواكر Electron والمتصفحات والتطبيقات** — ‏VS Code و Claude و Slack؛ و Chrome و Brave و Edge و Vivaldi و Arc تُفحص لكل ملف تعريف متصفح على حدة؛ و Firefox؛ وذواكر حِزم تقارير الأعطال والتتبّع‏ (Sentry و Crashlytics و Sparkle).
 
 **3. مخلّفات المشاريع، مجمّعة حسب المستودع** — ‏`node_modules` و `dist` و `build` و `target` و `__pycache__`، والملفات التي يتجاهلها git. معطّلة افتراضيًا؛ مرّر `-p` لتفعيلها. أما في التشغيل التفاعلي فتُعرض عليك بعد انتهاء فحص الذواكر.
 
-**4. Docker / Podman** — أمر `system prune -af`، ولا يُنفَّذ إلا باختيارك. لا تُمسّ وحدات التخزين المُسمّاة إطلاقًا.
+**4. Docker / Podman** — أمر `system prune -af`، ومعه `buildx prune -af` لذاكرة كل مُنشئ buildx (يُشغَّل المُنشئ المتوقف لذلك ثم يُوقَف من جديد)، ولا يُنفَّذ إلا باختيارك. لا تُحذف وحدات التخزين المُسمّاة إطلاقًا.
 
 **5. بيانات التطبيقات المهجورة** — مجلدات Application Support و Caches و Preferences العائدة لتطبيقات لم تعد مثبّتة.
+
+**ما الذي تحرّره إعادة التشغيل.** ذاكرة التبديل (swap)، ومجلدات الملفات المؤقتة التي يُفرغها macOS عند الإقلاع، والملفات المحذوفة التي ما زال تطبيقٌ يُبقيها مفتوحة، ليست ملفات يستطيع أي منظّف حذفها، وقد يبلغ مجموعها عشرات الغيغابايتات على قرص ممتلئ. حين يتجاوز مجموعها المساحة الحرة، يذكر `cdm` ذلك تحت سطر القرص ويسمّي التطبيقات التي تُبقي ملفات محذوفة مفتوحة: إغلاقها يحرّر ذلك الجزء دون إعادة تشغيل.
 
 ## الأمان
 

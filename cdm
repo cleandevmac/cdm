@@ -238,6 +238,16 @@ human_to_kb() {
 DISK_TOTAL_KB=0
 DISK_USED_KB=0
 DISK_FREE_KB=0
+# What a restart would give back that no clean can delete as files: swap, the
+# temp folders macOS empties at boot, and deleted files an app still holds open.
+# Set by restart_stats, read by restart_line. see docs/DESIGN.md#restart-estimate
+DISK_SWAP_KB=0
+DISK_TEMP_KB=0
+DISK_HELD_KB=0
+DISK_HELD_APPS=""
+RESTART_NOTE_MIN_KB=1048576
+# The two temp folders a boot empties — not /private/var/tmp, which survives one.
+BOOT_TEMP_DIRS=("$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)" "/private/tmp")
 
 # disk_stats — refresh the three globals above. Returns non-zero (and leaves all
 # three at 0) when df answers with something unparseable. Sets globals, so it
@@ -280,6 +290,109 @@ disk_line() {
     printf '%s total · %s used (%s%%) · %s free' \
         "$(human_kb "$DISK_TOTAL_KB")" "$(human_kb "$DISK_USED_KB")" \
         "$(disk_used_pct)" "$(human_kb "$DISK_FREE_KB")"
+}
+
+# swap_stats — set DISK_SWAP_KB to what macOS's swap files occupy: the VM
+# volume's own Used column, counted only when that volume shares $HOME's APFS
+# container, i.e. when the swap sits inside the "used" disk_line prints. Leaves
+# it at 0 and fails otherwise. Read from df, not `sysctl vm.swapusage`, whose
+# decimal separator follows the locale ("4096,00M").
+swap_stats() {
+    DISK_SWAP_KB=0
+    local home_dev="" vm_dev="" vm_used=""
+    read -r home_dev vm_dev vm_used <<EOF
+$(df -Pk "$HOME" /System/Volumes/VM 2>/dev/null | awk 'NR==2 {h=$1} NR==3 && $6=="/System/Volumes/VM" {v=$1; u=$3} END {print h, v, u}')
+EOF
+    case "$vm_used" in ''|*[!0-9]*) return 1 ;; esac
+    case "$home_dev" in /dev/disk*) ;; *) return 1 ;; esac
+    # One container, one disk number: /dev/disk3s5 and /dev/disk3s6 are disk3's.
+    [ "${home_dev%%s[[:digit:]]*}" = "${vm_dev%%s[[:digit:]]*}" ] || return 1
+    DISK_SWAP_KB="$vm_used"
+}
+
+# temp_stats — set DISK_TEMP_KB to what the BOOT_TEMP_DIRS hold, counting only a
+# folder on $HOME's own volume (anywhere else it is not in "used"). du is
+# bounded: a temp folder a runaway process filled can hold millions of files.
+temp_stats() {
+    DISK_TEMP_KB=0
+    local home_dev d kb
+    home_dev=$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print $1}')
+    [ -n "$home_dev" ] || return 1
+    for d in ${BOOT_TEMP_DIRS[@]+"${BOOT_TEMP_DIRS[@]}"}; do
+        [ -d "$d" ] || continue
+        [ "$(df -Pk "$d" 2>/dev/null | awk 'NR==2 {print $1}')" = "$home_dev" ] || continue
+        kb=$(bounded 5 du -skx "$d" 2>/dev/null | awk 'NR==1 {print $1}')
+        case "$kb" in ''|*[!0-9]*) continue ;; esac
+        DISK_TEMP_KB=$((DISK_TEMP_KB + kb))
+    done
+    return 0
+}
+
+# held_stats — set DISK_HELD_KB to the files on $HOME's volume that were deleted
+# while an app still holds them open — their space returns only when the app
+# closes them — and DISK_HELD_APPS to the three biggest holders. lsof lists one
+# row per open handle, so each file counts once, by device and inode; -a ANDs
+# the two filters, which lsof would otherwise OR into "every open file". Only
+# this user's processes are visible, so the figure is a floor.
+held_stats() {
+    DISK_HELD_KB=0; DISK_HELD_APPS=""
+    local mnt out kb="" apps=""
+    mnt=$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {for (i = 6; i <= NF; i++) printf "%s%s", (i > 6 ? " " : ""), $i}')
+    [ -n "$mnt" ] || return 1
+    out=$(bounded 5 lsof -a -nP +L1 -F pctsiD "$mnt" 2>/dev/null | LC_ALL=C awk '
+        function flush() {
+            k = d ":" i
+            if (t == "REG" && s != "" && i != "" && !(k in seen)) { seen[k] = 1; tot += s; by[c] += s }
+            t = ""; s = ""; i = ""; d = ""
+        }
+        /^p/ { flush() }
+        /^c/ { c = substr($0, 2) }
+        /^f/ { flush() }
+        /^t/ { t = substr($0, 2) }
+        /^s/ { s = substr($0, 2) }
+        /^i/ { i = substr($0, 2) }
+        /^D/ { d = substr($0, 2) }
+        END {
+            flush()
+            for (x in by) { n++; nm[n] = x; sz[n] = by[x] }
+            for (r = 1; r <= 3 && r <= n; r++) {
+                b = 0
+                for (j = 1; j <= n; j++) if (!(j in done) && (b == 0 || sz[j] > sz[b])) b = j
+                done[b] = 1; apps = apps (r > 1 ? ", " : "") nm[b]
+            }
+            printf "%d|%s\n", tot / 1024, apps
+        }')
+    IFS='|' read -r kb apps <<EOF
+$out
+EOF
+    case "$kb" in ''|*[!0-9]*) return 1 ;; esac
+    DISK_HELD_KB="$kb"; DISK_HELD_APPS="$apps"
+}
+
+# restart_stats — refresh the four globals restart_line reads; a part that
+# cannot be measured stays at 0. Sets globals, so parent shell only.
+restart_stats() {
+    swap_stats; temp_stats; held_stats
+    return 0
+}
+
+# restart_line — "A restart would free about …" from those globals; empty (and
+# failing) unless the total is at least RESTART_NOTE_MIN_KB and at least the
+# free space — past that point a restart gives back more than any clean can.
+# Parts under 1 MiB are left out. Formats only, like disk_line.
+restart_line() {
+    local total=$((DISK_SWAP_KB + DISK_TEMP_KB + DISK_HELD_KB)) parts=""
+    [ "$total" -ge "$RESTART_NOTE_MIN_KB" ] || return 1
+    [ "$total" -ge "$DISK_FREE_KB" ] || return 1
+    [ "$DISK_SWAP_KB" -ge 1024 ] && parts="$(human_kb "$DISK_SWAP_KB") of swap"
+    [ "$DISK_TEMP_KB" -ge 1024 ] && parts="${parts:+$parts, }$(human_kb "$DISK_TEMP_KB") of temp files"
+    if [ "$DISK_HELD_KB" -ge 1024 ]; then
+        parts="${parts:+$parts, }$(human_kb "$DISK_HELD_KB") of deleted files still held open"
+        # Named only when quitting them would matter: small holders are daemons.
+        [ "$DISK_HELD_KB" -ge "$RESTART_NOTE_MIN_KB" ] && [ -n "$DISK_HELD_APPS" ] &&
+            parts="$parts by $DISK_HELD_APPS — quitting them frees that part now"
+    fi
+    printf 'A restart would free about %s: %s' "$(human_kb "$total")" "$parts"
 }
 
 # bounded <seconds> <cmd...> — run a command with a hard timeout (macOS has no
@@ -1043,6 +1156,102 @@ container_reclaimable_kb() {
     echo "$total"
 }
 
+# buildx_name_ok <name> — a buildx builder or node name in the shape buildx
+# itself allows: ASCII letters, digits, '.', '_' and '-', led by a letter or
+# digit. The names come from docker's own output, but they reach docker as
+# arguments and the plan as text, so anything else is skipped.
+# see docs/DESIGN.md#buildx-builders
+buildx_name_ok() {
+    is_ascii "$1" || return 1
+    case "$1" in ''|[![:alnum:]]*|*[![:alnum:]._-]*) return 1 ;; esac
+    return 0
+}
+
+# buildx_cache_rows — one "builder|state|KiB" line per docker-container buildx
+# builder whose BuildKit cache holds anything. That cache is the named volume
+# buildx_buildkit_<node>_state, which `system df` counts as an in-use volume:
+# it is never in the Build Cache figure above and `system prune -af` never frees
+# it. Sized from the volumes, never `buildx du`, which refuses a stopped builder
+# rather than start it. state is stopped if any node is, else running; a node
+# with no container (inactive) is left out — starting it could need a pull.
+# see docs/DESIGN.md#buildx-builders
+buildx_cache_rows() {
+    local builders vols name f2 f3 vn vs nkb cur="" drv="" state="" kb=0
+    builders=$(bounded 8 docker buildx ls --format '{{.Name}}|{{.DriverEndpoint}}|{{.Status}}' 2>/dev/null) || return 0
+    # {{println}}, not {{"\n"}}: docker turns a \n in --format into a newline
+    # before Go parses it, which splits the quoted string.
+    vols=$(bounded 8 docker system df -v --format '{{range .Volumes}}{{.Name}}|{{.Size}}{{println}}{{end}}' 2>/dev/null) || return 0
+    while IFS='|' read -r name f2 f3; do
+        [ -n "$name" ] || continue
+        if [ -z "$f3" ]; then
+            # A builder row (no status of its own); its nodes follow it.
+            flush_buildx_row
+            cur="$name"; drv="$f2"; state=""; kb=0
+            continue
+        fi
+        [ "$drv" = "docker-container" ] || continue
+        case "$f3" in running|stopped) ;; *) continue ;; esac
+        buildx_name_ok "$name" || continue
+        nkb=0
+        while IFS='|' read -r vn vs; do
+            [ "$vn" = "buildx_buildkit_${name}_state" ] && nkb=$(human_to_kb "$vs")
+        done <<EOF
+$vols
+EOF
+        # Under 1 MiB is BuildKit's own bookkeeping, what a prune leaves behind.
+        [ "$nkb" -ge 1024 ] || continue
+        kb=$((kb + nkb))
+        [ "$f3" = stopped ] && state=stopped
+        [ -n "$state" ] || state=running
+    done <<EOF
+$builders
+EOF
+    flush_buildx_row
+}
+
+# flush_buildx_row — print the row buildx_cache_rows has been totting up, if
+# it found a cache. Reads that function's locals (cur, state, kb).
+flush_buildx_row() {
+    [ "$kb" -gt 0 ] || return 0
+    buildx_name_ok "$cur" || return 0
+    echo "$cur|$state|$kb"
+}
+
+# buildx_cache_kb — what buildx_cache_rows would free, summed.
+buildx_cache_kb() {
+    local b st kb t=0
+    while IFS='|' read -r b st kb; do
+        [ -n "$kb" ] && t=$((t + kb))
+    done < <(buildx_cache_rows)
+    echo "$t"
+}
+
+# prune_buildx_caches — empty each builder buildx_cache_rows names with buildx's
+# own `prune -af`, so no volume is deleted: the builder, its settings and its
+# volume all stay. prune refuses a stopped builder, so one is started for it and
+# stopped again after. Must run BEFORE `system prune -af`, which removes a
+# stopped builder's container and then its image — after which starting it
+# needs a pull. see docs/DESIGN.md#buildx-builders
+prune_buildx_caches() {
+    local b state kb
+    while IFS='|' read -r b state kb; do
+        [ -n "$b" ] || continue
+        if [ "$state" = stopped ]; then
+            echo "${DIM}  \$ docker buildx inspect --bootstrap ${b}${NC}"
+            if ! bounded 60 docker buildx inspect --bootstrap "$b" >/dev/null 2>&1; then
+                echo "${YELLOW}  could not start builder ${b}; its cache is left as it was${NC}"
+                continue
+            fi
+        fi
+        echo "${DIM}  \$ docker buildx prune --builder ${b} -af${NC}"
+        docker buildx prune --builder "$b" -af 2>&1 | sed 's/^/    /'
+        # Back to how it was found.
+        [ "$state" = stopped ] || continue
+        echo "${DIM}  \$ docker buildx stop ${b}${NC}"
+        docker buildx stop "$b" 2>&1 | sed 's/^/    /'
+    done < <(buildx_cache_rows)
+}
+
 # scan_containers — for each container category, register it if at least one of
 # its (whitelisted, installed, running) engines reports reclaimable data. The
 # category's paths are the engine names; its size is pre-computed here and
@@ -1058,6 +1267,8 @@ scan_containers() {
             engine_ok "$eng" || continue
             command -v "$eng" >/dev/null 2>&1 || continue
             size=$(container_reclaimable_kb "$eng")
+            # see docs/DESIGN.md#buildx-builders
+            if [ "$eng" = docker ]; then size=$(( ${size:-0} + $(buildx_cache_kb) )); fi
             [ "${size:-0}" -gt 0 ] || continue
             avail="${avail:+$avail
 }$eng"
@@ -1075,13 +1286,15 @@ EOF
 }
 
 # run_container_prune <engine-list> — run the FIXED prune command for each
-# whitelisted engine. The command is hard-coded (never taken from JSON), and
-# volumes are never pruned, so named volumes / databases are safe.
+# whitelisted engine, and for docker first empty its buildx builders' caches.
+# The commands are hard-coded (never taken from JSON), and no volume is ever
+# deleted, so named volumes / databases are safe.
 run_container_prune() {
     local eng
     while IFS= read -r eng; do
         [ -n "$eng" ] || continue
         if ! engine_ok "$eng"; then echo "${YELLOW}  skip (unknown engine): ${eng}${NC}"; continue; fi
+        if [ "$eng" = docker ]; then prune_buildx_caches; fi
         echo "${DIM}  \$ ${eng} system prune -af${NC}"
         "$eng" system prune -af 2>&1 | sed 's/^/    /'
     done <<EOF
@@ -1637,7 +1850,7 @@ show_details() {
     case "${CAT_METHOD[$i]}" in
         trash)      label="${YELLOW}move to Trash (recoverable)${NC}" ;;
         emptytrash) label="${RED}permanently empty the Trash${NC}" ;;
-        container)  label="${RED}run 'system prune -af' (images/containers/build cache; volumes kept)${NC}" ;;
+        container)  label="${RED}run 'buildx prune -af' per builder, then 'system prune -af' (images/containers/build caches; volumes kept)${NC}" ;;
         project)    label="${RED}delete build/dep dirs${NC} + ${YELLOW}Trash other git-ignored (recoverable)${NC}" ;;
         *)          label="${RED}delete permanently${NC}" ;;
     esac
@@ -1646,7 +1859,15 @@ show_details() {
     local p n=0
     if [ "${CAT_METHOD[$i]}" = "container" ]; then
         printf '%s\n' "Engines:"
-        while IFS= read -r p; do [ -n "$p" ] && printf '  %s\n' "$p"; done <<EOF
+        local b st kb
+        while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            printf '  %s\n' "$p"
+            [ "$p" = docker ] || continue
+            while IFS='|' read -r b st kb; do
+                [ -n "$b" ] && printf '  %9s  buildx builder %s (%s)\n' "$(human_kb "$kb")" "$b" "$st"
+            done < <(buildx_cache_rows)
+        done <<EOF
 ${CAT_PATHS[$i]}
 EOF
     elif [ "${CAT_METHOD[$i]}" = "project" ]; then
@@ -2022,6 +2243,11 @@ fi
 # see docs/DESIGN.md#disk-status
 if disk_stats; then
     echo " ${BLUE}💽 Disk:${NC} $(disk_line)"
+    # see docs/DESIGN.md#restart-estimate
+    restart_stats
+    if restart_note=$(restart_line); then
+        echo "    ${DIM}↳ ${restart_note}${NC}"
+    fi
 fi
 
 # ---- Scan ------------------------------------------------------------------

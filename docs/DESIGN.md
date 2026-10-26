@@ -231,6 +231,58 @@ Four decisions in a ten-line function:
 refreshes — it is called from inside command substitutions all over the script,
 and a refresh there would be silently lost.
 
+The line printed under the disk line, when there is one, is the
+[restart estimate](#restart-estimate).
+
+<a id="restart-estimate"></a>
+## What a restart would free
+
+A Mac can sit at 0.4 GB free with nothing left for any cleaner to find, and come
+back from a restart with 36 GB free. What a restart releases is not files cdm
+can delete, so the disk line is followed — only when it matters — by one more:
+
+    ↳ A restart would free about 36.20 GB: 14.00 GB of swap, 20.10 GB of temp files, …
+
+Three parts, each measured, none deleted:
+
+- **Swap** is the VM volume's own `Used` column, from `df -Pk "$HOME"
+  /System/Volumes/VM`. It counts only when that volume shares `$HOME`'s APFS
+  container — only then is it inside the "used" the line above prints. The
+  container is the device name minus its `s<N>…` suffix: `/dev/disk3s5` and
+  `/dev/disk3s6` are both `disk3`'s, and `disk12` must not read as `disk1`,
+  which is why the strip is `%%s[[:digit:]]*` (the longest suffix starting at an
+  `s` followed by a digit) and not "everything from the first digit". The VM
+  row must also be mounted at `/System/Volumes/VM`: for a path that is not its
+  own mount, df answers for whichever volume contains it. Not `sysctl
+  vm.swapusage`, which writes its decimal separator in the locale (`4096,00M`
+  under `de_DE`) — the bug [numeric-format](#numeric-format) records shipping.
+- **Temp files** are the two folders macOS empties at boot: the per-user
+  `DARWIN_USER_TEMP_DIR` and `/private/tmp`. Checked on a Mac fifteen minutes
+  after a restart, neither held anything older than the boot, while
+  `/private/var/tmp` still held files from before it — so that one is left out.
+  A folder counts only if it is on `$HOME`'s volume, and its `du` is `bounded`:
+  a temp folder a runaway process filled can hold millions of files.
+- **Deleted files still held open.** A file deleted while an app has it open
+  keeps its blocks until the app closes it. `lsof -a +L1 <mount>` lists them —
+  `-a` because lsof ORs its selections by default, and without it this is every
+  open file on the volume. lsof prints one record per *handle*, and a single
+  deleted plist cache was seen open in dozens of processes at once, so each
+  file counts once, by device and inode. The three biggest holders are named,
+  but only once the part reaches 1 GiB: below that they are daemons nobody can
+  quit (`linkd`, `sharingd`). lsof sees only the user's own processes, so the
+  figure is a floor.
+
+The line prints only when the total is at least 1 GiB **and** at least the free
+space — the point past which a restart gives back more than any clean can. A
+healthy disk (5 GB of swap, 54 GB free) gets no line. cdm restarts nothing and
+quits nothing; the held-open part is the one a user can free without a
+restart, by quitting the apps it names.
+
+The three cost about half a second together (lsof itself 0.1 s), and a part
+that cannot be measured stays at 0 rather than failing the line. Like
+`disk_stats`, `restart_stats` sets globals and is called from the parent shell;
+`restart_line` formats only.
+
 <a id="fd-3"></a>
 ## Keypresses come from fd 3, never fd 0
 
@@ -361,6 +413,51 @@ It does not know the kind, falls through to plain `register_paths` on
 `paths` — and, were the globs there, would offer every image including the
 ones in use. With them in a field it has never heard of, it registers
 nothing. `tests/test_android_images.sh` pins that fallback too.
+
+<a id="buildx-builders"></a>
+## buildx builders' caches
+
+A buildx builder on the `docker-container` driver runs its own BuildKit in a
+container named `buildx_buildkit_<node>`, and keeps all of its cache in the
+named volume `buildx_buildkit_<node>_state`. `system df` files that volume under
+Local Volumes, *in use* — so its Build Cache line (the daemon's own BuildKit)
+never includes it, `system prune -af` never frees it, and cdm, which never
+prunes a volume, reported a real 10.58 GB builder as 1.9 MB of build cache.
+
+`buildx_cache_rows` lists those builders from `docker buildx ls --format` and
+sizes each from its volume in `docker system df -v --format`. Not from `buildx
+du`: it refuses a stopped builder ("driver not running") rather than start it,
+and a scan starts nothing. Two details of those formats were found by running
+them, against docker 29.8.2 and buildx 0.37.2:
+
+- `.Driver` is not a field of buildx ls's template. `.DriverEndpoint` is, and it
+  prints the driver on a builder row and the endpoint on a node row; builder
+  rows are the ones with no status.
+- `{{println}}`, never `{{"\n"}}`: docker rewrites a `\n` in a `--format` string
+  into a real newline *before* Go parses the template, which splits the quoted
+  string. The fake docker in `tests/test_buildx.sh` answers only the exact
+  strings, so either drift fails a test.
+
+The clean is buildx's own `docker buildx prune --builder <name> -af`, so cdm
+still deletes no volume: BuildKit drops its cache, and the builder, its settings
+and its volume all stay. `prune` refuses a stopped builder too, so a stopped one
+is started (`buildx inspect --bootstrap`), pruned, and stopped again — left as it
+was found. All of it runs **before** `system prune -af`, which removes a stopped
+builder's container and then the BuildKit image; after that, starting the
+builder means pulling the image, and cdm makes no network calls. For the same
+reason an *inactive* node — one with no container at all — is left out of both
+the size and the clean, however large its volume. A volume under 1 MiB is left
+out too: that is BuildKit's own bookkeeping, what a prune leaves behind (487 KiB
+on the real engine), and offering it would put the row back after every clean.
+
+A builder counts as stopped if any node with a cache is stopped; a node without
+one says nothing about it. Builder and node names come from docker, not JSON,
+but they reach docker as arguments and the plan as text, so `buildx_name_ok`
+holds them to the shape buildx itself allows — ASCII letters, digits, `.`, `_`
+and `-`, led by a letter or digit, so never a flag. As in
+[bundle-id-shape](#bundle-id-shape), that is `is_ascii` plus `[[:alnum:]]`,
+never a bracket range. An older buildx without `--format` fails the command, and
+the builders are simply not offered.
 
 <a id="glob-expansion"></a>
 ## Glob expansion in register_paths

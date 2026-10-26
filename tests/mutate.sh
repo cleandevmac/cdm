@@ -550,6 +550,120 @@ check_mutation 'ANDROID_AVD_HOME ignored' test_android_images.sh \
 check_mutation 'ends_with_any drops the / boundary' test_android_images.sh \
     's@case "\$1" in "\$r"|\*/"\$r") return 0@case "$1" in *"$r") return 0@'
 
+# ---- buildx builders' caches (docs/DESIGN.md#buildx-builders) ---------------
+#
+# The fake docker answers only the exact --format strings, so a template that
+# drifts back to a field buildx lacks, or to the \n docker rewrites, is caught as
+# surely as a dropped guard. The order rows are the ones that matter most: run
+# out of order, the clean either deletes a stopped builder's container before it
+# can be started, or leaves a builder running that the user had stopped.
+
+check_mutation 'buildx ls asks for .Driver, which its template lacks' test_buildx.sh \
+    's@{{.DriverEndpoint}}@{{.Driver}}@'
+
+check_mutation 'volume rows end in {{"\n"}}, which docker breaks' test_buildx.sh \
+    's@{{.Size}}{{println}}{{end}}@{{.Size}}{{"\\n"}}{{end}}@'
+
+check_mutation 'docker-driver builders counted' test_buildx.sh \
+    's@        \[ "\$drv" = "docker-container" \] || continue@        :@'
+
+check_mutation 'inactive nodes (no container) counted' test_buildx.sh \
+    's@case "\$f3" in running|stopped)@case "$f3" in running|stopped|inactive)@'
+
+check_mutation 'node names reach docker unchecked' test_buildx.sh \
+    's@        buildx_name_ok "\$name" || continue@        :@'
+
+check_mutation 'builder names reach docker unchecked' test_buildx.sh \
+    's@    buildx_name_ok "\$cur" || return 0@    :@'
+
+check_mutation 'builders with no cache reported' test_buildx.sh \
+    's@    \[ "\$kb" -gt 0 \] || return 0@    :@'
+
+check_mutation 'a node with no cache decides the state' test_buildx.sh \
+    's@        \[ "\$nkb" -ge 1024 \] || continue@        :@'
+
+check_mutation 'what a prune leaves behind is offered again' test_buildx.sh \
+    's@\[ "\$nkb" -ge 1024 \]@[ "$nkb" -gt 0 ]@'
+
+check_mutation 'buildx caches not added to the docker row' test_buildx.sh \
+    's@            if \[ "\$eng" = docker \]; then size=@            if false; then size=@'
+
+check_mutation 'stopped builder pruned without starting it' test_buildx.sh \
+    's@if ! bounded 60 docker buildx inspect --bootstrap "\$b" >/dev/null 2>&1; then@if false; then@'
+
+check_mutation 'running builder started anyway' test_buildx.sh \
+    's@        if \[ "\$state" = stopped \]; then@        if true; then@'
+
+check_mutation 'stopped builder left running after the prune' test_buildx.sh \
+    's@        \[ "\$state" = stopped \] || continue@        continue@'
+
+check_mutation 'a builder that will not start is pruned anyway' test_buildx.sh \
+    '/could not start builder/{n;s/continue/:/;}'
+
+check_mutation 'buildx caches never pruned' test_buildx.sh \
+    's@        if \[ "\$eng" = docker \]; then prune_buildx_caches; fi@        :@'
+
+check_mutation 'buildx run for every engine' test_buildx.sh \
+    's@        if \[ "\$eng" = docker \]; then prune_buildx_caches; fi@        prune_buildx_caches@'
+
+check_mutation 'system prune runs before the builders' test_buildx.sh \
+    's@        if \[ "\$eng" = docker \]; then prune_buildx_caches; fi@        "$eng" system prune -af >/dev/null 2>\&1; if [ "$eng" = docker ]; then prune_buildx_caches; fi@'
+
+# ---- the restart estimate (docs/DESIGN.md#restart-estimate) -----------------
+#
+# Every part is measured against a fake the test controls, so each mutation
+# below changes a number or a sentence the test pins exactly. The container
+# rows are the ones a live machine could never catch: on a stock Mac $HOME and
+# the VM volume always share disk3, so only a fixture can say what disk12 is.
+
+check_mutation 'swap counted from a VM volume in another container' test_restart.sh \
+    '/vm_dev%%/s/] || return 1$/] || :/'
+
+check_mutation 'container read up to any digit (disk12 == disk1)' test_restart.sh \
+    '/vm_dev%%/s/%%s\[\[:digit:\]\]\*/%%[[:digit:]]*/g'
+
+check_mutation 'whole device names compared (disk3s5 != disk3s6)' test_restart.sh \
+    '/vm_dev%%/s/%%s\[\[:digit:\]\]\*//g'
+
+check_mutation 'VM row taken without checking its mount point' test_restart.sh \
+    's@NR==3 && \$6=="/System/Volumes/VM" @NR==3 @'
+
+check_mutation 'swap read from the Available column' test_restart.sh \
+    's@{v=\$1; u=\$3}@{v=$1; u=$4}@'
+
+check_mutation 'a non-numeric swap figure accepted' test_restart.sh \
+    's@    case "\$vm_used" in ..|\*\[!0-9\]\*) return 1 ;; esac@    :@'
+
+check_mutation 'a temp folder on another volume counted' test_restart.sh \
+    '/= "\$home_dev" \] || continue/s/|| continue/|| :/'
+
+check_mutation 'lsof filters ORed into every open file (no -a)' test_restart.sh \
+    's@lsof -a -nP +L1@lsof -nP +L1@'
+
+check_mutation 'every open handle counted, not every file' test_restart.sh \
+    's@ && !(k in seen))@)@'
+
+check_mutation 'deleted directories counted as files' test_restart.sh \
+    's@if (t == "REG" && @if (@'
+
+check_mutation 'holders ranked smallest first' test_restart.sh \
+    's@sz\[j\] > sz\[b\]@sz[j] < sz[b]@'
+
+check_mutation 'mount point cut at its first space' test_restart.sh \
+    's@NR==2 {for (i = 6; i <= NF; i++) printf "%s%s", (i > 6 ? " " : ""), \$i}@NR==2 {print $6}@'
+
+check_mutation 'restart line shown below 1 GiB' test_restart.sh \
+    's@^RESTART_NOTE_MIN_KB=1048576$@RESTART_NOTE_MIN_KB=0@'
+
+check_mutation 'restart line shown when more is already free' test_restart.sh \
+    's@    \[ "\$total" -ge "\$DISK_FREE_KB" \] || return 1@    :@'
+
+check_mutation 'temp files left out of the total' test_restart.sh \
+    's@local total=\$((DISK_SWAP_KB + DISK_TEMP_KB + DISK_HELD_KB))@local total=$((DISK_SWAP_KB + DISK_HELD_KB))@'
+
+check_mutation 'holders named however little they hold' test_restart.sh \
+    's@\[ "\$DISK_HELD_KB" -ge "\$RESTART_NOTE_MIN_KB" \] && \[ -n@[ -n@'
+
 echo
 printf 'mutations: %d, survived (holes in the tests): %d\n' "$total" "$survived"
 if [ "$survived" -gt 0 ]; then

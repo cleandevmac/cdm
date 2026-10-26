@@ -48,15 +48,17 @@ Make sure `~/.local/bin` is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH
 
 ## What it cleans
 
-**1. Dev caches & build artifacts** — Xcode DerivedData and DeviceSupport, Go build & module cache, npm/npx/pnpm/yarn, JS build tools (Turbo, Vite, webpack, Parcel, ESLint), Gradle, Maven, sbt/Ivy, Cargo, Python (pip, uv, poetry, ruff, mypy), Ruby/Bundler, Bun, Deno, CocoaPods, SwiftPM, Composer, Bazel, Zig, cloud CLIs (kubectl, AWS, gcloud, Azure), Docker buildx, JetBrains, Playwright, the Homebrew download cache, Android Studio caches and emulator snapshots, and Android system images no AVD uses any more.
+**1. Dev caches & build artifacts** — Xcode DerivedData and DeviceSupport, Go build & module cache, npm/npx/pnpm/yarn, JS build tools (Turbo, Vite, webpack, Parcel, ESLint), Gradle, Maven, sbt/Ivy, Cargo, Python (pip, uv, poetry, ruff, mypy), Ruby/Bundler, Bun, Deno, CocoaPods, SwiftPM, Composer, Bazel, Zig, cloud CLIs (kubectl, AWS, gcloud, Azure), Docker buildx, JetBrains, Playwright, the Homebrew and PlatformIO download caches, Android Studio caches and emulator snapshots, and Android system images no AVD uses any more.
 
 **2. Electron, browser & app caches** — VS Code, Claude (including per-preview webview caches and, opt-in, the Cowork VM image), Slack; Chrome, Brave, Edge, Vivaldi and Arc scanned per browser profile; Firefox; and crash/telemetry SDK caches (Sentry, Crashlytics, Sparkle).
 
 **3. Project junk, grouped per repo** — `node_modules`, `dist`, `build`, `target`, `__pycache__`, and git-ignored files. Only ever what the repo itself git-ignores. Off by default; pass `-p` to enable it. Interactive runs offer it after the cache scan finishes.
 
-**4. Docker / Podman** — `system prune -af`, opt-in. Named volumes are never touched.
+**4. Docker / Podman** — `system prune -af`, plus `buildx prune -af` on each buildx builder's cache (a stopped builder is started for it and stopped again), opt-in. Named volumes are never deleted.
 
 **5. Orphaned app data** — Application Support, Caches and Preferences belonging to apps that are no longer installed.
+
+**What a restart would free.** Swap, the temp folders macOS empties at boot, and files deleted while an app still holds them open are not files any cleaner can delete — yet on a full disk they can add up to tens of GB. When they come to more than the disk has free, `cdm` says so under the disk line and names the apps holding deleted files: quitting those frees that part without a restart.
 
 ## Safety
 
