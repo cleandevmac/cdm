@@ -77,6 +77,12 @@ CDM_LIB=1 . "$CDM_BIN"
 
 trap _cdm_test_cleanup EXIT
 
+# cdm resolved the developer's real /private/var/folders tree at source time, and
+# is_safe_target accepts its C, T and X — where this very sandbox lives ($TMPDIR is
+# T). Off by default, so every assertion is about the sandboxed $HOME; a test of
+# that folder points USER_FOLDER at a sandboxed one of its own.
+USER_FOLDER=""
+
 T_PASS=0
 T_FAIL=0
 

@@ -100,7 +100,8 @@ change; the README and landing page both promise this, so preserve it.
 A category object is `icon`, `name`, `desc`, `method`, `default`, `paths`, and optionally `procs`:
 
 - `method` — `rm` (permanent; the target regenerates) or `trash` (recoverable). Also `project`,
-  `container` and `rustup`, which the script synthesizes rather than reading verbatim.
+  `container`, `rustup`, `rustdocs` and `clones`, which the script synthesizes rather than reading
+  verbatim.
 - `default` — whether it arrives pre-selected. `s` in the TUI resets to these.
 - `desc` — the *why*, shown next to the row.
 - `procs` — optional; macOS process names of the apps that rewrite this category's caches while
@@ -116,9 +117,15 @@ A category object is `icon`, `name`, `desc`, `method`, `default`, `paths`, and o
   age in `idleDays` where they need one: `android-idle-images` (one row per image that only AVDs
   idle for `idleDays` boot), `older-versions` (each glob is a family; all but the newest),
   `rust-toolchains` (one row per toolchain other than the default and stable; method forced to
-  `rustup`, registered by `scan_toolchains` after every file loads) and `claude-transcripts`
-  (sessions untouched for `idleDays`; always `trash`, never pre-selected, whatever the rule
-  says). Each has its section in `docs/DESIGN.md`.
+  `rustup`, registered by `scan_toolchains` after every file loads), `rust-docs` (each
+  toolchain's installed rust-docs component; method forced to `rustdocs`, removed with `rustup
+  component remove`), `code-sign-clones` (the app copies a killed Chromium browser leaves in the
+  user folder's `X`; method forced to `clones`, never one a running browser may use, sized by
+  `register_clones` rather than du) and `claude-transcripts` (sessions untouched for
+  `idleDays`; always `trash`, never pre-selected, whatever the rule says). Each has its section
+  in `docs/DESIGN.md`.
+- A path may start with `@cache/`, `@temp/` or `@boot-temp/` instead of `~/`: the user's own
+  `C`, `T` and `X` under `/private/var/folders` (see Safety below).
 
 Note the on-disk names are `name`/`method`/`default`, not `label`/`disposition`/`safe`. If you are
 writing docs, read a rule file first — this has been documented wrong before.
@@ -171,6 +178,14 @@ relative paths, anything containing `..`, and the protected set (`~/Documents`, 
 `~/Downloads`, `~/Pictures`, `~/Movies`, `~/Music`, `~/.ssh`, `~/.gnupg`, iCloud Drive). It then
 requires **both** lexical containment under `$HOME` *and* physical containment — resolving the
 parent with `cd -P` so a symlinked component can't walk a delete off the home tree.
+
+Off `$HOME` there is exactly one other place: the user's own `/private/var/folders/<xx>/<hash>`
+(`USER_FOLDER`, resolved and ownership-checked once at source time, like `HOME_P`), whose `C`,
+`T` and `X` rules reach through the `@cache/`, `@temp/` and `@boot-temp/` tokens. `in_user_folder`
+applies the same lexical + physical pair there and never accepts the folder, `C`, `T` or `X`
+themselves. With no `USER_FOLDER` a token stays relative and matches nothing. `tests/lib.sh`
+empties `USER_FOLDER` after sourcing, because the test sandbox lives inside the real `T`; a test
+of that branch sets its own. See `docs/DESIGN.md#user-folder`.
 
 This function is the tool's entire trust story. Treat changes to it as high-risk.
 

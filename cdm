@@ -70,8 +70,10 @@ ${YELLOW}What it cleans (all described by editable JSON pattern files):${NC}
   • Developer caches & build artifacts (Xcode, Go, Node, Gradle, Cargo, ...).
   • Installed SDK pieces that download again (PlatformIO toolchains, the
     Android NDK & older build-tools, idle AVDs' system images, extra Rust
-    toolchains) and old Claude Code transcripts — all unchecked.
-  • Electron / browser / application caches.
+    toolchains, Rust's offline docs) and old Claude Code transcripts — all
+    unchecked.
+  • Electron / browser / application caches, and what your own temp folders
+    hold (clang's module cache, copies of Chrome a killed browser leaves).
   • Project junk in your repos, grouped per project (node_modules, dist, build,
     target, git-ignored) — pick exactly which repos to clean. Only ever what
     your repo already git-ignores; a tracked build/ or dist/ is left alone.
@@ -508,11 +510,48 @@ cat_indices() {
     local i=0
     while [ "$i" -lt "$N" ]; do echo "$i"; i=$((i + 1)); done
 }
-expand_tilde() { case "$1" in "~/"*) echo "$HOME/${1#\~/}" ;; "~") echo "$HOME" ;; *) echo "$1" ;; esac; }
+# expand_tilde <pattern> — a rule path made absolute: ~ is $HOME, and @cache/,
+# @temp/ and @boot-temp/ are USER_FOLDER's C, T and X. With no USER_FOLDER a token
+# stays as written — relative, so it matches nothing and no gate accepts it.
+# see docs/DESIGN.md#user-folder
+expand_tilde() {
+    local root
+    case "$1" in
+        "~/"*) echo "$HOME/${1#\~/}"; return ;;
+        "~") echo "$HOME"; return ;;
+        @cache/*) root=C ;;
+        @temp/*) root=T ;;
+        @boot-temp/*) root=X ;;
+        *) echo "$1"; return ;;
+    esac
+    [ -n "$USER_FOLDER" ] || { echo "$1"; return; }
+    echo "$USER_FOLDER/$root/${1#*/}"
+}
+
+# USER_FOLDER — this user's own /private/var/folders/<xx>/<hash>, resolved. Its C
+# is DARWIN_USER_CACHE_DIR, T is DARWIN_USER_TEMP_DIR ($TMPDIR), and X is emptied
+# at every boot. Empty unless it has exactly that shape and belongs to this user.
+# see docs/DESIGN.md#user-folder
+user_folder_ok() {
+    local rest="${1#/private/var/folders/}"
+    [ "$rest" != "$1" ] || return 1
+    case "$rest" in [!/.][!/]/[!/.]*) : ;; *) return 1 ;; esac
+    case "${rest#??/}" in */*) return 1 ;; esac
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]
+}
+user_folder() {
+    local c d
+    c=$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null) && [ -n "$c" ] || return 0
+    d=$(cd -P "$c/.." 2>/dev/null && pwd -P) || return 0
+    user_folder_ok "$d" && printf '%s' "$d"
+    return 0
+}
+USER_FOLDER=$(user_folder)
 
 # is_safe_target <path> — last line of defense before any deletion. Must be a
-# non-empty, absolute, existing path with no "..", living under $HOME (the only
-# place any pattern or scan can legitimately point).
+# non-empty, absolute, existing path with no "..", living under $HOME or inside
+# this user's own temp folders (in_user_folder) — the only places any pattern or
+# scan can legitimately point.
 # $HOME resolved through any symlinks — used for the physical containment check.
 HOME_P=$(cd -P "$HOME" 2>/dev/null && pwd -P) || HOME_P="$HOME"
 is_safe_target() {
@@ -533,14 +572,28 @@ is_safe_target() {
         "$HOME"/.ssh|"$HOME"/.ssh/*|"$HOME"/.gnupg|"$HOME"/.gnupg/*|\
         "$HOME"/Library/Mobile\ Documents|"$HOME"/Library/Mobile\ Documents/*) return 1 ;;
     esac
-    # Lexical containment under $HOME.
-    case "$p" in "$HOME"/*) : ;; *) return 1 ;; esac
+    # Lexical containment under $HOME — anywhere else, only this user's own temp
+    # folders can hold a target.
+    case "$p" in "$HOME"/*) : ;; *) in_user_folder "$p"; return ;; esac
     # Physical containment: resolve the parent so a symlinked path component
     # (e.g. an app-data dir relocated onto an external volume) cannot lead a
     # delete outside the real home tree.
     local rp
     rp=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P) || return 1
     case "$rp/" in "$HOME_P/"|"$HOME_P"/*) return 0 ;; *) return 1 ;; esac
+}
+
+# in_user_folder <path> — is_safe_target's rule off $HOME: strictly inside
+# USER_FOLDER's C, T or X, lexically and once the parent is resolved, so neither a
+# symlinked component nor a "." segment lands a delete on one of those folders.
+# see docs/DESIGN.md#user-folder
+in_user_folder() {
+    local p="$1" rp
+    [ -n "$USER_FOLDER" ] || return 1
+    case "$p" in */.|*/./*) return 1 ;; esac
+    case "$p" in "$USER_FOLDER"/[CTX]/?*) : ;; *) return 1 ;; esac
+    rp=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P) || return 1
+    case "$rp/" in "$USER_FOLDER"/[CTX]/*) return 0 ;; *) return 1 ;; esac
 }
 
 # ---------------------------------------------------------------------------
@@ -1032,6 +1085,12 @@ flush_pattern_category() {
         claude-transcripts)
             # see docs/DESIGN.md#claude-transcripts
             register_transcripts "$cicon" "$cname" "$cdesc" "$ccands" "$cdays" ;;
+        code-sign-clones)
+            # see docs/DESIGN.md#code-sign-clones
+            register_clones "$cicon" "$cname" "$cdefault" "$cdesc" "$ccands" ;;
+        rust-docs)
+            # see docs/DESIGN.md#rust-docs
+            register_rust_docs "$cicon" "$cname" "$cdefault" "$cdesc" "$ccands" ;;
         rust-toolchains)
             # Registered by scan_toolchains once every file has loaded: naming the
             # repos that pin a toolchain takes the project scan's config.
@@ -1782,6 +1841,189 @@ $1
 EOF
 }
 
+# register_rust_docs <icon> <name> <default> <desc> <globs> — one row for the
+# rust-docs component of every toolchain that has it installed, sized from its
+# html folder and removed with `rustup component remove`, never rm. Registers
+# nothing without a rustup to remove with. see docs/DESIGN.md#rust-docs
+register_rust_docs() {
+    local icon="$1" name="$2" default="$3" desc="$4" globs="$5"
+    local pat m tc line has found="" tcs=""
+    RUSTUP_BIN=$(rustup_bin) || { RUSTUP_BIN=""; return 0; }
+    while IFS= read -r pat; do
+        [ -n "$pat" ] || continue
+        _glob_matches "$(expand_tilde "$pat")"
+        while IFS= read -r m; do
+            [ -n "$m" ] && [ -d "$m" ] && [ ! -L "$m" ] || continue
+            tc="${m##*/}"
+            toolchain_name_ok "$tc" || continue
+            [ "${m%/toolchains/*}" != "$m" ] || continue
+            # rustup's own record of the component, not merely a folder by that name.
+            [ -f "$m/lib/rustlib/components" ] || continue
+            has=0
+            while IFS= read -r line || [ -n "$line" ]; do
+                case "$line" in rust-docs-*) has=1; break ;; esac
+            done < "$m/lib/rustlib/components"
+            [ "$has" -eq 1 ] && is_nonempty "$m/share/doc/rust/html" || continue
+            case "$NL$found$NL" in *"$NL$m/share/doc/rust/html$NL"*) continue ;; esac
+            found="${found:+$found$NL}$m/share/doc/rust/html"
+            tcs="${tcs:+$tcs, }$tc"
+        done <<EOF
+$_GM
+EOF
+    done <<EOF
+$globs
+EOF
+    [ -n "$found" ] || return 0
+    add_category "$icon" "$name" "$desc" "rustdocs" "$default" "$found"
+    CAT_SUMMARY[$((N - 1))]="$tcs"
+}
+
+# run_rustup_docs_remove <docs dirs> — remove each toolchain's rust-docs with
+# rustup's own `component remove`, never rm, pointed at the rustup home it was
+# found in.
+run_rustup_docs_remove() {
+    local p t tc
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        t="${p%/share/doc/rust/html}"; tc="${t##*/}"
+        if [ -z "$RUSTUP_BIN" ]; then echo "${YELLOW}  skip (no rustup): ${tc}${NC}"; continue; fi
+        if [ "$t" = "$p" ] || [ "${t%/toolchains/*}" = "$t" ] || ! toolchain_name_ok "$tc" || ! is_safe_target "$p"; then
+            echo "${YELLOW}  skip (unsafe): ${p}${NC}"; continue
+        fi
+        echo "${DIM}  \$ rustup component remove rust-docs --toolchain ${tc}${NC}"
+        RUSTUP_HOME="${t%/toolchains/*}" "$RUSTUP_BIN" component remove rust-docs --toolchain "$tc" 2>&1 | sed 's/^/    /'
+    done <<EOF
+$1
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Chromium's code-sign clones
+# see docs/DESIGN.md#code-sign-clones
+# ---------------------------------------------------------------------------
+# While its app stays installed, a clone holds only its own metadata — measured
+# at 248 KB for a clone of Chrome.app's 740 entries, about 3 entries per KiB.
+CLONE_ENTRIES_PER_KB=3
+
+# app_starts <now> — "<app>US<start epoch>" for each `ps -x -o etime=,command=`
+# line on stdin whose command runs from <app>.app/Contents/MacOS/.
+app_starts() {
+    LC_ALL=C awk -v now="$1" '
+        {
+            e = $1; d = 0
+            if (index(e, "-")) { d = substr(e, 1, index(e, "-") - 1); e = substr(e, index(e, "-") + 1) }
+            n = split(e, t, ":"); s = 0
+            for (k = 1; k <= n; k++) s = s * 60 + t[k]
+            cmd = $0; sub(/^[ \t]*[^ \t]+[ \t]+/, "", cmd)
+            i = index(cmd, ".app/Contents/MacOS/")
+            if (!i) next
+            app = substr(cmd, 1, i - 1); sub(/.*\//, "", app)
+            printf "%s\037%d\n", app, now - (s + d * 86400)
+        }'
+}
+
+# clone_version_shared <app> <version> — true when an installed <app>.app still
+# carries <version>: its clones then share every file block with it.
+clone_version_shared() {
+    local d x
+    [ -n "$1" ] && [ -n "$2" ] || return 1
+    for d in "/Applications/$1.app" "$HOME/Applications/$1.app"; do
+        for x in "$d"/Contents/Frameworks/*.framework/Versions/"$2"; do
+            [ -d "$x" ] && return 0
+        done
+    done
+    return 1
+}
+
+# register_clones <icon> <name> <default> <desc> <globs> — one row for the clones
+# a Chromium browser makes of its app bundle at launch and leaves behind when it
+# is killed: every match but one a running copy of its app may still use, sized
+# by what the clones alone hold, never by du.
+register_clones() {
+    local icon="$1" name="$2" default="$3" desc="$4" globs="$5"
+    local pat m found now starts rows born c b x app v typ a b2 cnt sample entries
+    local paths n kb=0 us=$'\x1f' tab=$'\t' __ifs="$IFS"
+    now=$(date +%s)
+    # cdm is itself in the list, so an empty one means ps failed — and then no
+    # clone can be told apart from the one a running browser uses.
+    starts=$(ps -x -o etime=,command= 2>/dev/null | app_starts "$now")
+    [ -n "$starts" ] || return 0
+    # Printed and captured once, not appended one by one: a test script can leave
+    # a thousand clones, and bash 3.2 copies a string on every append.
+    found=$(while IFS= read -r pat; do
+        [ -n "$pat" ] || continue
+        pat=$(expand_tilde "$pat"); IFS=
+        for m in $pat; do [ -e "$m" ] && printf '%s\n' "$m"; done
+        IFS="$__ifs"
+    done <<EOF
+$globs
+EOF
+)
+    [ -n "$found" ] || return 0
+    # One stat for every birth time, then each clone's app and version by glob.
+    rows=$(printf '%s\n' "$found" | tr '\n' '\0' | xargs -0 stat -f "%B$tab%N" 2>/dev/null |
+        while IFS="$tab" read -r born c; do
+            app=""; v=""
+            for b in "$c"/*.app "$c"/*.app.bundle; do
+                [ -d "$b" ] || continue
+                app="${b##*/}"; app="${app%.bundle}"; app="${app%.app}"
+                for x in "$b"/Contents/Frameworks/*.framework/Versions/[0-9]*; do
+                    [ -d "$x" ] && { v="${x##*/}"; break; }
+                done
+                break
+            done
+            printf '%s\037%s\037%s\037%s\n' "$born" "$app" "$v" "$c"
+        done)
+    printf '%s\n' "$starts" > "$SCAN_DIR/app_starts"
+    # Kept: an unknown age, a launch still in progress, and any clone born within
+    # five minutes after a running copy of its app started. The rest come back as
+    # P<path>, then G<app><version><count><sample> per app and version.
+    rows=$(printf '%s\n' "$rows" | LC_ALL=C awk -F'\037' -v now="$now" -v f="$SCAN_DIR/app_starts" '
+        BEGIN { while ((getline l < f) > 0) { split(l, a, "\037"); ns++; sa[ns] = a[1]; st[ns] = a[2] } }
+        NF >= 4 {
+            if ($1 !~ /^[0-9]+$/ || $1 == 0 || now - $1 < 300) next
+            for (k = 1; k <= ns; k++) if (sa[k] == $2 && $1 >= st[k] - 5 && $1 <= st[k] + 300) next
+            print "P\037" $4
+            g = $2 "\037" $3
+            if (!(g in cnt)) { order[++ng] = g; sample[g] = $4 }
+            cnt[g]++
+        }
+        END { for (j = 1; j <= ng; j++) print "G\037" order[j] "\037" cnt[order[j]] "\037" sample[order[j]] }')
+    paths=$(printf '%s\n' "$rows" | LC_ALL=C awk -F'\037' '$1 == "P" { print $2 }')
+    [ -n "$paths" ] || return 0
+    n=$(printf '%s\n' "$paths" | wc -l | tr -d ' ')
+    while IFS="$us" read -r typ a b2 cnt sample; do
+        [ "$typ" = G ] || continue
+        entries=$(find "$sample" 2>/dev/null | wc -l | tr -d ' ')
+        case "$entries" in ''|*[!0-9]*) entries=0 ;; esac
+        kb=$((kb + cnt * entries / CLONE_ENTRIES_PER_KB))
+        # A version no longer installed is held by its clones alone.
+        if [ -n "$b2" ] && ! clone_version_shared "$a" "$b2"; then
+            kb=$((kb + $(du_kb "$sample")))
+        fi
+    done <<EOF
+$(printf '%s\n' "$rows" | LC_ALL=C awk -F'\037' '$1 == "G"')
+EOF
+    add_category "$icon" "$name" "$desc" "clones" "$default" "$paths"
+    CAT_KB[$((N - 1))]="$kb"
+    if [ "$n" -eq 1 ]; then CAT_SUMMARY[$((N - 1))]="1 copy"
+    else CAT_SUMMARY[$((N - 1))]="$n copies"; fi
+}
+
+# run_clone_delete <clone dirs> — delete each one is_safe_target accepts, with a
+# single line for the lot: a test script can leave a thousand behind.
+run_clone_delete() {
+    local p gone=0
+    while IFS= read -r p; do
+        [ -n "$p" ] && [ -e "$p" ] || continue
+        if is_safe_target "$p"; then rm -rf "$p" 2>/dev/null; gone=$((gone + 1))
+        else echo "${YELLOW}  skip (unsafe): ${p}${NC}"; fi
+    done <<EOF
+$1
+EOF
+    echo "${GREEN}  deleted:${NC} ${gone} copies"
+}
+
 # ---------------------------------------------------------------------------
 # Orphaned-app-data detection
 # ---------------------------------------------------------------------------
@@ -1918,13 +2160,13 @@ compute_sizes_write() {
     local i
     for i in $(cat_indices); do
         (
-            # Container categories carry a pre-computed size (their "paths" are
-            # engine names, not files) — preserve it instead of du'ing.
-            if [ "${CAT_METHOD[$i]}" = "container" ]; then
-                echo "${CAT_KB[$i]}" > "$SCAN_DIR/size_$i"
-            else
-                paths_kb "${CAT_PATHS[$i]}" > "$SCAN_DIR/size_$i"
-            fi
+            # Container and clone categories carry a pre-computed size — a
+            # container's "paths" are engine names, and du counts every clone's
+            # shared blocks again — preserve it instead of du'ing.
+            case "${CAT_METHOD[$i]}" in
+                container|clones) echo "${CAT_KB[$i]}" > "$SCAN_DIR/size_$i" ;;
+                *) paths_kb "${CAT_PATHS[$i]}" > "$SCAN_DIR/size_$i" ;;
+            esac
         ) &
         # Size categories concurrently; cap only to avoid a runaway process count.
         if [ $(( (i + 1) % 24 )) -eq 0 ]; then wait; fi
@@ -2335,6 +2577,8 @@ show_details() {
         emptytrash) label="${RED}permanently empty the Trash${NC}" ;;
         container)  label="${RED}run 'buildx prune -af' per builder, then 'system prune -af' (images/containers/build caches; volumes kept)${NC}" ;;
         rustup)     label="${RED}uninstall with 'rustup toolchain uninstall'${NC}" ;;
+        rustdocs)   label="${RED}remove with 'rustup component remove rust-docs'${NC}" ;;
+        clones)     label="${RED}delete permanently — no running copy of the app uses them${NC}" ;;
         project)    label="${RED}delete build/dep dirs${NC} + ${YELLOW}Trash other git-ignored (recoverable)${NC}" ;;
         *)          label="${RED}delete permanently${NC}" ;;
     esac
@@ -2367,6 +2611,17 @@ EOF
             esac
             printf '  %9s  %b  %s\n' "$(human_kb "$(du_kb "$p")")" "$act" "${p/#$HOME/~}"
         done < <(paste -d $'\x1f' <(printf '%s\n' "${CAT_PMETHOD[$i]}") <(printf '%s\n' "${CAT_PATHS[$i]}"))
+    elif [ "${CAT_METHOD[$i]}" = "clones" ]; then
+        # No du per copy: it would count the app's shared blocks once for each.
+        printf '%s\n' "Copies (${CAT_SUMMARY[$i]}; each shares its files with the app, so the total is what they alone hold):"
+        while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            n=$((n + 1))
+            [ "$n" -gt 200 ] && { printf '  %s\n' "${DIM}... and more${NC}"; break; }
+            printf '  %s\n' "$p"
+        done <<EOF
+${CAT_PATHS[$i]}
+EOF
     else
         printf '%s\n' "Paths:"
         while IFS= read -r p; do
@@ -2473,6 +2728,7 @@ print_plan() {
             emptytrash) tag="${RED}EMPTY TRASH${NC}"; PLAN_HAS_PERMANENT=1 ;;
             container)  tag="${RED}PRUNE     ${NC}"; PLAN_HAS_PERMANENT=1 ;;
             rustup)     tag="${RED}UNINSTALL ${NC}"; PLAN_HAS_PERMANENT=1 ;;
+            rustdocs)   tag="${RED}UNINSTALL ${NC}"; PLAN_HAS_PERMANENT=1 ;;
             project)
                 # A project deletes regenerable dirs and/or trashes git-ignored:
                 # mark permanent unless every item is Trash-only.
@@ -2577,6 +2833,8 @@ run_cleanup() {
             if [ "$method" = "emptytrash" ]; then empty_trash; continue; fi
             if [ "$method" = "container" ]; then run_container_prune "${CAT_PATHS[$i]}"; continue; fi
             if [ "$method" = "rustup" ]; then run_rustup_uninstall "${CAT_PATHS[$i]}"; continue; fi
+            if [ "$method" = "rustdocs" ]; then run_rustup_docs_remove "${CAT_PATHS[$i]}"; continue; fi
+            if [ "$method" = "clones" ]; then run_clone_delete "${CAT_PATHS[$i]}"; continue; fi
             if [ "$method" = "project" ]; then
                 # Per-project categories carry a per-path method (rm vs trash);
                 # pair each path with its method (US-joined) and act accordingly.

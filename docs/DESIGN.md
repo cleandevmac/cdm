@@ -20,10 +20,12 @@ leftover data from uninstalled apps, and regenerable folders in your code repos.
 
 What it does:
   1. Reclaims space from regenerable caches / build output (Xcode, Go, Node,
-     Gradle, Maven, Cargo, Python, Homebrew, Electron & browser caches, ...).
+     Gradle, Maven, Cargo, Python, Homebrew, Electron & browser caches, ...),
+     including what sits in your own temp folders: clang's module cache and the
+     app copies a killed Chrome leaves behind.
   2. Offers, unchecked, installed SDK pieces that download again (PlatformIO
      toolchains, Android NDK and older build-tools, idle AVDs' system images,
-     extra Rust toolchains) and old Claude Code transcripts.
+     extra Rust toolchains, Rust's offline docs) and old Claude Code transcripts.
   3. Clears project junk in your repos (node_modules, dist, build, target,
      __pycache__, or anything your .gitignore ignores).
   4. Surfaces leftover data from apps that are no longer installed.
@@ -37,7 +39,8 @@ folder, or downloads them, so it also runs standalone:
 Nothing is deleted without an itemized confirmation. Caches / build output are
 removed permanently (they regenerate); orphaned app data, git-ignored files and
 old Claude Code transcripts are moved to the Trash so they can be restored; a
-Rust toolchain is removed by rustup itself. --dry-run only looks.
+Rust toolchain, or a toolchain's offline docs, is removed by rustup itself.
+--dry-run only looks.
 
 <a id="frame-literals"></a>
 ## The frame is built from literals, not escape text
@@ -381,11 +384,105 @@ they accumulate. A disk-cleanup tool quietly littering /var/folders is not a
 joke that stays funny, so each run tidies up after the ones before it.
 
 This is the one rm in the script that does NOT go through is_safe_target, and
-it cannot: that gate demands containment under $HOME, while these live in
-$TMPDIR by construction. What replaces it is that the target is neither user
+it cannot: that gate demands containment under $HOME or inside the resolved
+[user folder](#user-folder), while these live in $TMPDIR as the environment
+spells it — `/var/folders/…/T/`, or `/tmp`. What replaces it is that the target is neither user
 data nor pattern-derived — the glob is this script's own mktemp template,
 literal and fixed-width, so it matches only directories cdm itself created.
 Nothing read from a rules file reaches this.
+
+<a id="user-folder"></a>
+## This user's own temp folders
+
+Everything else cdm deletes lives under `$HOME`. The one other place is the
+folder macOS gives each user at `/private/var/folders/<xx>/<hash>`: its `C` is
+`getconf DARWIN_USER_CACHE_DIR`, its `T` is `DARWIN_USER_TEMP_DIR` (the
+`$TMPDIR` every process inherits), and its `X` is the folder macOS empties at
+every boot (Chromium asks for it as `DIRHELPER_USER_LOCAL_TRANSLOCATION`). They
+belong to the user, and some of a developer Mac's biggest leftovers sit there:
+2.1 GB of clang modules in one account, Node's compile cache, and, under test
+scripts that kill Chrome, a thousand clones of the browser
+([code-sign-clones](#code-sign-clones)).
+
+A rule names them with a token where it would write `~`: `@cache/`, `@temp/`
+and `@boot-temp/`, which `expand_tilde` turns into `USER_FOLDER/C`, `T` and
+`X`.
+
+`USER_FOLDER` is resolved once, at source time like `HOME_P`: the parent of
+`DARWIN_USER_CACHE_DIR`, through `cd -P`. `user_folder_ok` then demands exactly
+`/private/var/folders/<two characters>/<one component>`, a real directory, not
+a symlink, owned by this user (`-O`). Anything else leaves it empty, and an
+empty one leaves a token as written: a relative path, which matches nothing
+and which `is_safe_target` refuses outright. That is also all a cdm too old to
+know the tokens does with them, so these rows can sit in `paths` instead of a
+field older scripts ignore.
+
+`is_safe_target` keeps its `$HOME` rules as they were and gains one branch: a
+path not lexically under `$HOME` goes to `in_user_folder`, the same pair of
+checks against the user folder. The path must be lexically strictly inside
+`C`, `T` or `X`, and still inside one of them once its parent is resolved with
+`cd -P`. A `.` segment is refused, since `C/.` would otherwise be `C` itself.
+Never the folder itself, `C`, `T` or `X` themselves, or its `0`, which holds
+system state rather than caches. Rules reach these paths in the resolved form
+`expand_tilde` writes; the `/var/folders` spelling `getconf` prints is refused
+lexically, like any path that only resolves into the folder.
+
+The test sandbox lives inside the real `T` (`$TMPDIR`), so `tests/lib.sh`
+empties `USER_FOLDER` after sourcing. A test of this branch moves `$HOME` and
+points `USER_FOLDER` at a sandboxed folder outside it, so any acceptance can
+only come from the new branch.
+
+<a id="code-sign-clones"></a>
+## Chromium's code-sign clones
+
+At every launch, Chrome (any Chromium build) clones its whole app bundle with
+`clonefile()` into `X/<bundle id>.code_sign_clone/code_sign_clone.XXXXXX`
+(`chrome/browser/mac/code_sign_clone_manager.mm`), so the running browser keeps
+a valid code signature while an update replaces the app on disk. A helper
+process deletes the clone after a clean exit. A crash or a SIGKILL — Puppeteer
+killing the browser it launched, a test runner's timeout — runs no helper, and
+nothing in Chrome looks for the copies earlier runs left; only a reboot empties
+`X`. On one Mac, test scripts in three accounts left 1,493 in fourteen hours.
+
+`du` counts each one as the full app, 730 MB: about 1 TB for those 1,493, on a
+228 GB disk. APFS clones share their blocks, so that figure is fiction.
+Measured on a scratch APFS image: a real copy of Chrome.app (740 entries) took
+730 MB, and each of 50 clones of it took 248 KB — its own metadata, nothing
+more. So `register_clones` sizes the row itself, and `compute_sizes_write`
+keeps that figure, as it does a container's:
+
+- each copy of a version the installed app still carries: its entries divided
+  by `CLONE_ENTRIES_PER_KB` (3, from 740 entries in 248 KB);
+- a version no longer installed is held by its copies alone, so its blocks
+  count too: `du` of one copy, once per version.
+
+The installed app is `/Applications/<name>.app` or `~/Applications/<name>.app`.
+The name comes from the bundle inside the clone (`Google Chrome.app.bundle`),
+the version from its framework's `Versions/<v>`.
+
+Kept:
+
+- **a copy a running browser may use**: born (APFS birth time, `stat -f %B`,
+  one stat for the lot) within five minutes after a running process of the same
+  app started. Start times come from `ps -x -o etime=,command=`, elapsed time
+  rather than a date to parse, and the app is the bundle name before
+  `.app/Contents/MacOS/`, so Chrome's helpers (`Google Chrome Helper`) are apps
+  of their own and never match. A copy that existed at scan time cannot become
+  one in use later, since a launch makes a new one.
+- **a copy younger than five minutes**: a launch still in progress.
+- **a copy of unknown age**.
+- **everything, when ps lists nothing**: cdm itself is in that list, so an empty
+  one means ps failed, and then no copy can be told apart from the one a browser
+  runs on.
+
+The clean deletes each copy through `is_safe_target` and writes one receipt
+line for the lot: a thousand "deleted:" lines would push everything else out of
+clean.log. The details view lists the copies without a `du` for each.
+
+The matches and the offered paths are printed and captured once, never
+appended to a string one at a time — the trap [old transcripts](#claude-transcripts)
+fell into first. Over 1,000 clones the appending version took 16 s, this one
+1.2 s.
 
 <a id="json-line-protocol"></a>
 ## The JSON line protocol
@@ -579,6 +676,27 @@ to two seconds here), so it runs only once some toolchain is offered, and from
 `scan_toolchains`, after every rule file has loaded: the scan config lives in
 project-junk.json, which loads after dev-caches.json.
 
+<a id="rust-docs"></a>
+## Rust offline docs
+
+rustup's default profile installs `rust-docs` with every toolchain: the HTML
+`rustup doc` opens offline, 0.9 GB per toolchain, in
+`<toolchain>/share/doc/rust/html`. The `rust-docs` kind offers it in one
+unchecked row naming each toolchain that has it, sized from those folders.
+
+It is removed with `rustup component remove rust-docs --toolchain <name>`,
+`RUSTUP_HOME` set to the home it was found in, never with `rm`. rustup lists
+each installed component in `lib/rustlib/components` and its files in
+`lib/rustlib/manifest-rust-docs-<target>`, and its next update of that
+toolchain removes the old files by that list — files deleted behind its back
+leave the list naming paths that are gone. For the same reason a toolchain is
+offered only when `components` lists `rust-docs-*` (an `html` folder alone is
+not the component), and only under the rules `rust-toolchains` follows: no
+linked toolchain, no name rustup would not have written
+(`toolchain_name_ok`), and nothing without a rustup to run. A removed component
+stays removed across `rustup update`; `rustup component add rust-docs` brings
+it back.
+
 <a id="glob-expansion"></a>
 ## Glob expansion in register_paths
 
@@ -619,6 +737,12 @@ version: only a native build needs the NDK or CMake (the Android Gradle plugin,
 accepted), and nothing builds from sources. `cmdline-tools` (sdkmanager, the way
 back for everything else), `platform-tools` (adb) and `emulator` are offered by
 no rule.
+
+Claude desktop's bundled Claude Code builds are a family too
+(`Claude/claude-code/<version>`, ~250 MB each, a copy per macOS account): new
+sessions start on the newest build, and the previous one stays on disk after an
+update. That row arrives unchecked and names `Claude` in `procs`, since a session
+opened before the update can still be running the older build.
 
 <a id="claude-transcripts"></a>
 ## Old Claude Code transcripts

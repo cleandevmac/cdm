@@ -79,7 +79,7 @@ check_mutation 'physical containment checks $HOME not $HOME_P' test_safe_target.
     's|case "\$rp/" in "\$HOME_P/"\|"\$HOME_P"/\*) return 0 ;; \*) return 1 ;; esac|case "$rp/" in "$HOME/"\|"$HOME"/*) return 0 ;; *) return 1 ;; esac|'
 
 check_mutation 'lexical containment under $HOME dropped' test_safe_target.sh \
-    's|case "\$p" in "\$HOME"/\*) : ;; \*) return 1 ;; esac|:|'
+    's|case "\$p" in "\$HOME"/\*) : ;; \*) in_user_folder "\$p"; return ;; esac|:|'
 
 check_mutation 'existence check dropped' test_safe_target.sh \
     's|\[ -e "\$p" \] \|\| return 1|:|'
@@ -98,6 +98,48 @@ check_mutation 'existence check dropped' test_safe_target.sh \
 # Both were verified as equivalent mutants against the real script rather than
 # assumed. Listing them would mean permanently reporting a hole the tests are
 # not able to close, which trains the reader to ignore this output.
+
+# ---- this user's own temp folders (docs/DESIGN.md#user-folder) ---------------
+#
+# is_safe_target's second branch, and the tokens rules reach it with. The folder
+# is sandboxed outside $HOME, so an acceptance can only come from that branch.
+
+check_mutation 'per-user branch never consulted' test_user_folder.sh \
+    's@\*) in_user_folder "\$p"; return ;; esac@*) return 1 ;; esac@'
+
+check_mutation 'user folder: a folder below it accepted' test_user_folder.sh \
+    's@    case "\${rest#??/}" in \*/\*) return 1 ;; esac@    :@'
+
+check_mutation 'user folder: ownership unchecked' test_user_folder.sh \
+    's@ && \[ -O "\$1" \]$@@'
+
+check_mutation 'in_user_folder: physical containment dropped' test_user_folder.sh \
+    's@    case "\$rp/" in "\$USER_FOLDER"/\[CTX\]/\*) return 0 ;; \*) return 1 ;; esac@    return 0@'
+
+check_mutation 'in_user_folder: lexical containment dropped' test_user_folder.sh \
+    's@    case "\$p" in "\$USER_FOLDER"/\[CTX\]/?\*) : ;; \*) return 1 ;; esac@    :@'
+
+check_mutation 'in_user_folder: any folder, not only C, T and X' test_user_folder.sh \
+    '/^in_user_folder()/,/^}/ s@\[CTX\]@*@g'
+
+check_mutation 'in_user_folder: a "." segment accepted' test_user_folder.sh \
+    's@    case "\$p" in \*/\.|\*/\./\*) return 1 ;; esac@    :@'
+
+check_mutation 'tokens expand with no user folder' test_user_folder.sh \
+    's@    \[ -n "\$USER_FOLDER" \] || { echo "\$1"; return; }@    :@'
+
+check_mutation '@temp/ points at the cache folder' test_user_folder.sh \
+    's|        @temp/\*) root=T ;;|        @temp/*) root=C ;;|'
+
+# Three guards are deliberately NOT listed, for the reason given above — no
+# input on a stock Mac distinguishes the mutant:
+#
+#   * user_folder_ok's first shape case and its `! -L`: the input is `pwd -P`
+#     output, which is never a symlink, and the depth check plus ownership refuse
+#     every other shape a real Mac has (/private/var/folders/<xx> is root's).
+#   * in_user_folder's empty-USER_FOLDER guard: the patterns then only match
+#     /C, /T and /X at the filesystem root, which do not exist, and is_safe_target
+#     checks existence first.
 
 # ---- small helpers ---------------------------------------------------------
 
@@ -244,7 +286,7 @@ check_mutation 'a failed open swallows the URL' test_after_clean_menu.sh \
     's|        printf .%b\\n. "  \${CYAN}\${DONATE_URL}\${NC}"|        :|'
 
 check_mutation 'expand_tilde ignores bare ~' test_helpers.sh \
-    's|"~") echo "\$HOME" ;;|"~") echo "~" ;;|'
+    's|"~") echo "\$HOME"; return ;;|"~") echo "~"; return ;;|'
 
 check_mutation 'is_nonempty misses dotfile-only dirs' test_helpers.sh \
     's|for __e in "\$1"/\* "\$1"/\.\[!\.\]\*; do|for __e in "$1"/*; do|'
@@ -896,6 +938,87 @@ check_mutation 'the plan calls a toolchain uninstall a DELETE' test_rust_toolcha
 
 check_mutation 'details call a toolchain uninstall a delete' test_rust_toolchains.sh \
     's@        rustup)     label=@        zzrustup)   label=@'
+
+# ---- rust-docs (docs/DESIGN.md#rust-docs) ------------------------------------
+#
+# Offered only where rustup lists the component, and removed only by rustup. The
+# lines register_rust_docs shares with scan_toolchains are addressed by range.
+
+check_mutation 'rust-docs kind unrecognised' test_rust_docs.sh \
+    's|^        rust-docs)$|        zz-rust-docs)|'
+
+check_mutation 'docs offered without the component installed' test_rust_docs.sh \
+    's@                case "\$line" in rust-docs-\*) has=1; break ;; esac@                has=1; break@'
+
+check_mutation 'docs offered with no rustup to remove them' test_rust_docs.sh \
+    '/^register_rust_docs()/,/^}/ s@    RUSTUP_BIN=\$(rustup_bin) || { RUSTUP_BIN=""; return 0; }@    RUSTUP_BIN=$(rustup_bin)@'
+
+check_mutation 'docs toolchain names go unchecked' test_rust_docs.sh \
+    '/^register_rust_docs()/,/^}/ s@            toolchain_name_ok "\$tc" || continue@            :@'
+
+check_mutation "a linked toolchain's docs are offered" test_rust_docs.sh \
+    '/^register_rust_docs()/,/^}/ s@\[ -n "\$m" \] && \[ -d "\$m" \] && \[ ! -L "\$m" \] || continue@[ -n "$m" ] \&\& [ -d "$m" ] || continue@'
+
+check_mutation 'docs removal skips the name check' test_rust_docs.sh \
+    's@ || ! toolchain_name_ok "\$tc" || ! is_safe_target "\$p"; then@ || ! is_safe_target "$p"; then@'
+
+check_mutation 'docs removal skips the safety gate' test_rust_docs.sh \
+    's@ || ! toolchain_name_ok "\$tc" || ! is_safe_target "\$p"; then@ || ! toolchain_name_ok "$tc"; then@'
+
+check_mutation 'docs removal runs with no rustup known' test_rust_docs.sh \
+    '/^run_rustup_docs_remove()/,/^}/ s@        if \[ -z "\$RUSTUP_BIN" \]; then echo@        if false; then echo@'
+
+check_mutation 'docs removal runs against the wrong rustup home' test_rust_docs.sh \
+    's@        RUSTUP_HOME="\${t%/toolchains/\*}" "\$RUSTUP_BIN" component@        "$RUSTUP_BIN" component@'
+
+check_mutation 'the clean never routes docs to rustup' test_rust_docs.sh \
+    's@            if \[ "\$method" = "rustdocs" \]; then run_rustup_docs_remove "\${CAT_PATHS\[\$i\]}"; continue; fi@@'
+
+check_mutation 'the plan calls a docs removal a DELETE' test_rust_docs.sh \
+    's@            rustdocs)   tag=@            zzrustdocs) tag=@'
+
+check_mutation 'details call a docs removal a delete' test_rust_docs.sh \
+    's@        rustdocs)   label=@        zzrustdocs) label=@'
+
+# ---- code-sign-clones (docs/DESIGN.md#code-sign-clones) ----------------------
+#
+# What is kept, how the row is sized, and that the clean goes through the gate.
+# ps is a shell function in the test, so every process list is pinned. A clone
+# of unknown age (the `!~ /^[0-9]+$/ || == 0` test) is not listed: stat always
+# reports an APFS birth time, so no fixture can produce one.
+
+check_mutation 'code-sign-clones kind unrecognised' test_code_sign_clones.sh \
+    's|^        code-sign-clones)$|        zz-code-sign-clones)|'
+
+check_mutation "a running browser's copy is offered" test_code_sign_clones.sh \
+    's@st\[k\] + 300) next@st[k] + 300) {}@'
+
+check_mutation 'a launch in progress is offered' test_code_sign_clones.sh \
+    's@ || now - \$1 < 300) next@) next@'
+
+check_mutation 'no process list: copies offered anyway' test_code_sign_clones.sh \
+    's@    \[ -n "\$starts" \] || return 0@    :@'
+
+check_mutation 'start times ignore whole days' test_code_sign_clones.sh \
+    's@now - (s + d \* 86400)@now - s@'
+
+check_mutation 'copies sized by du' test_code_sign_clones.sh \
+    's@                container|clones) echo@                container) echo@'
+
+check_mutation 'a still-installed version counted as data' test_code_sign_clones.sh \
+    's@if \[ -n "\$b2" \] && ! clone_version_shared "\$a" "\$b2"; then@if [ -n "$b2" ]; then@'
+
+check_mutation "an old version's blocks not counted" test_code_sign_clones.sh \
+    's@kb=\$((kb + \$(du_kb "\$sample")))@:@'
+
+check_mutation 'clone delete skips the safety gate' test_code_sign_clones.sh \
+    's@        if is_safe_target "\$p"; then rm -rf@        if true; then rm -rf@'
+
+check_mutation 'the clean never routes clones' test_code_sign_clones.sh \
+    's@            if \[ "\$method" = "clones" \]; then run_clone_delete "\${CAT_PATHS\[\$i\]}"; continue; fi@@'
+
+check_mutation 'details du each copy' test_code_sign_clones.sh \
+    's@    elif \[ "\${CAT_METHOD\[\$i\]}" = "clones" \]; then@    elif false; then@'
 
 echo
 printf 'mutations: %d, survived (holes in the tests): %d\n' "$total" "$survived"
