@@ -126,6 +126,17 @@ A category object is `icon`, `name`, `desc`, `method`, `default`, `paths`, and o
   in `docs/DESIGN.md`.
 - A path may start with `@cache/`, `@temp/` or `@boot-temp/` instead of `~/`: the user's own
   `C`, `T` and `X` under `/private/var/folders` (see Safety below).
+- `orphans.json` also has `apps`: a bundle `id`, a `name` and the `~/` `paths` an app keeps
+  under its own name (VS Code's `~/.vscode`); a path is literal or ends in
+  `<Product>[[:digit:]]*` (one folder per version). They join that id's orphan row once no
+  installed app owns it; a path several entries list stays while any of them is installed.
+  `optional` paths (a folder a CLI also uses, Docker Desktop's sandbox) get their own
+  "(optional)" row whose description is the entry's `note`; `keptByCommand` keeps a folder
+  while any command it names is on PATH (`~/.docker` while `docker` exists).
+  Take the id from the app's Homebrew cask or its `Info.plist` — a wrong id offers a live
+  app's data. See `docs/DESIGN.md#orphan-app-paths`. The installed set itself drops
+  LaunchServices records of apps in a Trash or gone from disk
+  (`docs/DESIGN.md#dead-launchservices-records`).
 
 Note the on-disk names are `name`/`method`/`default`, not `label`/`disposition`/`safe`. If you are
 writing docs, read a rule file first — this has been documented wrong before.

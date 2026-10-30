@@ -500,6 +500,8 @@ Records are newline-separated. Field layout per record type:
   IMG<US>glob                                                      (android-images candidates)
   CAND<US>glob | DAYS<US>n                                         (a computed kind's candidates / idleDays)
   L<US>path<US>strip | SKIP<US>prefix | SHARED<US>id                (orphan config)
+  APP<US>id<US>name<US>note | APATH<US>path | AOPT<US>path       (an orphan "apps" entry, its paths, its optional paths)
+  KCMD<US>path<US>command                                         (keptByCommand: one record per command)
   FILE<US>name | ORPHAN<US>name | ERR<US>message
 ---------------------------------------------------------------------------
 
@@ -1011,6 +1013,116 @@ class back to the old range is an EQUIVALENT mutant. Only ASCII ever reaches the
 second case, and over ASCII the range and the class accept the same characters
 under every collation. is_ascii is the guard doing the locale-proofing, so
 removing IT is the mutation tests/mutate.sh asserts on.
+
+<a id="dead-launchservices-records"></a>
+## Dead LaunchServices records
+
+`build_installed_set` used to take every reverse-DNS string anywhere in
+`lsregister -dump` as installed. The dump keeps records of apps that are gone,
+so an uninstalled app's data was never offered. Found by deleting VS Code: the
+app sat in `~/.Trash`, and LaunchServices followed it there, so
+`com.microsoft.VSCode` stayed "installed" and none of its 1.3 GB showed up.
+Emptying the Trash does not fix it either. The record stays, now marked
+`Bundle node not found on disk`, and a `handlerpref` record (VS Code was the
+default app for `.json`) names the id as well.
+
+The awk in front of the grep drops a whole record when:
+
+* its `path:` is inside a Trash (`/.Trash/` or a volume's `/.Trashes/`);
+* it says `Bundle node not found on disk` **and** `mount state: mounted`. The
+  volume is there and the bundle is not. An app on an unplugged disk says
+  `not mounted`, and it stays installed;
+* it is a `handlerpref` record. Default-app choices outlive the app, and an
+  installed handler has its own bundle record anyway.
+
+Dropping a record can only remove ids, so it is the one change here that can
+make a live app's data look orphaned. Two things bound that. The `mdfind` and
+`/Applications` half of the set does not read LaunchServices at all, so an app
+that is on disk is still found there. And bundle helpers of an old version
+(Chrome keeps dozens of dead `Helper` records) lose nothing: the live version
+has its own records, and `bid_is_kept` keeps a child id of any installed id.
+Measured on the machine that found this: 24 of 9,766 ids dropped, every one a
+deleted app, a staging copy from an update, or an old helper of an installed app.
+
+The same awk also writes each live record's `identifier:` to `inst_ids`. The
+grep needs two dots, so a real one-dot id such as `md.obsidian` or `notion.id`
+was only ever known from `defaults read` on an app found on disk. Adding exact
+identifiers can only keep more.
+
+<a id="orphan-app-paths"></a>
+## App data under a name that is not a bundle id
+
+The orphan scan finds folders named after a bundle id. Most Electron apps keep
+their real data under their product name instead: VS Code's 1.2 GB is in
+`Application Support/Code` and `~/.vscode`, never in `com.microsoft.VSCode`.
+No rule can guess that a folder named `Code` belongs to VS Code, so the
+mapping is data, `apps` in `orphans.json`: an id, a display name and `~/`
+paths. When `bid_is_kept` says no installed app owns the id, its paths that
+exist join the orphan row for that id, next to the bundle-id folders the scan
+found. The row is named after the app ("Orphaned: Visual Studio Code"), goes to
+the Trash and is never pre-selected, like every orphan row.
+
+Rules for an entry, each enforced in `register_orphans` rather than trusted:
+
+* Paths start with `~/`. A path is literal, or ends in `<Product>[[:digit:]]*`
+  for an app that keeps a folder per version: JetBrains IDEs and Android
+  Studio. The digit is what keeps a sibling product out: `PyCharm*` would match
+  `PyCharmCE2025.1` and `AndroidStudio*` would match `AndroidStudioPreview…`.
+  A class, not a `[0-9]` range, for the reason in
+  [#bundle-id-shape](#bundle-id-shape). The test suite holds every shipped
+  path to those two shapes.
+* A path listed by several entries stays while **any** of them is installed,
+  and joins only the first gone app's row. Zed and Zed Preview share
+  `~/.config/zed`; VS Code and its Insiders build share `~/.vscode-shared`; an
+  EAP build of a JetBrains IDE has its own id (`com.jetbrains.pycharm-EAP`) and
+  the release's folders, so it gets an entry of its own with the same paths.
+  Paths are compared as written, glob included, so a shared path must be
+  spelled the same in each entry.
+* The id must look like a bundle id (`looks_like_app_id`, which accepts one dot)
+  or the entry's paths are only ever kept. That id reaches a `grep -E` in
+  `bid_is_kept`.
+* Each path passes `is_safe_target` at scan time too, so a row never lists
+  something the clean would refuse.
+
+What the data must get right is the id. A wrong id reads as "not installed"
+while the app is open, and offers its live data. So every id comes from the
+app's Homebrew cask (its `uninstall quit:` or the `Preferences/<id>.plist` in
+its zap list) or from the app's own `Info.plist`. When the id carries a
+version (Sublime Text's `com.sublimetext.4`), the entry names the vendor
+namespace instead, `com.sublimetext`, which `bid_is_kept`'s parent match keeps
+while any version is installed.
+
+Some leftovers are worth offering but cannot be called the app's alone: a dot
+folder a command-line tool also uses (`~/.docker` for OrbStack's or Colima's
+docker, `~/.ollama` for Homebrew's ollama, `~/.codex` for the Codex CLI,
+`~/.android` and the SDK for Flutter and Gradle builds, `~/.cursor` for
+cursor-agent), and Docker Desktop's sandbox container, which holds its VM disk
+and is often the largest leftover of all. These go in the entry's `optional`
+list. They pass every check above, `kept` and `claimed` included, but land in a
+row of their own, "Orphaned: Docker Desktop (optional)", whose description is
+the entry's `note`: what the folder holds and when to leave it. Unchecked, like
+every orphan row, so taking one is always a decision the user makes after
+reading why. The same `key#optional` trick keeps them apart in the raw list:
+`#` cannot occur in an id, so the key never collides with a real bundle id.
+
+A note alone was not enough. The first scan with these rows, on the machine that
+found the VS Code bug, offered `~/.docker`: Docker Desktop was gone, but OrbStack
+was installed and its `docker` reads that folder. So `keptByCommand` names the
+commands that keep each shared folder (`~/.docker` by `docker`, `~/.android` and
+the SDK by `adb`, `flutter`, `emulator`), and while any of them is on PATH the
+folder joins `kept`, whichever app lists it. It is per folder, not per app, on
+purpose. Someone who moves from Docker Desktop to OrbStack still has `docker`,
+and a per-app rule would then hide Docker Desktop's VM disk, the one leftover
+most worth offering. `type -P` finds only executable files, so a command left
+behind as a dangling link into the deleted app keeps nothing.
+
+That container is the one exception to "app sandboxes are never touched". The
+orphan scan never walks `~/Library/Containers`; only a path a rule names
+there, for an app that is gone, is ever offered, and only as optional.
+
+What stays out entirely: a parent folder a vendor's other products share
+(`JetBrains`, `Google`, `JetBrains/consentOptions`), and `~/.claude`, which
+Claude Code keeps whether or not Claude desktop is installed.
 
 <a id="sizing"></a>
 ## One du per category

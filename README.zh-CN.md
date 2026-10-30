@@ -60,7 +60,7 @@ cdm
 
 **6. Docker / Podman** — `system prune -af`，以及对每个 buildx builder 的缓存执行 `buildx prune -af`（已停止的 builder 会为此启动，完成后再停止），需要主动选择。具名卷永远不会被删除。
 
-**7. 残留的应用数据** — 属于那些已经卸载的应用的 Application Support、Caches 和 Preferences。
+**7. 残留的应用数据** — 属于那些已经卸载的应用的 Application Support、Caches 和 Preferences，以及一些应用以自己名字保存的文件夹：VS Code 的 `~/.vscode` 和 `Application Support/Code`、Cursor、Zed、Docker Desktop、Postman、Slack、JetBrains IDE、Android Studio 等，列在 `orphans.json` 中。命令行工具也会用到的文件夹（`~/.docker`、`~/.ollama`、`~/.codex`、`~/.android`、`~/.cursor`）以及 Docker Desktop 的虚拟机磁盘，会单独放在一行 **(optional)** 中，并说明何时应该保留；只要使用它的命令（`docker`、`ollama`、`codex`、`adb` 等）还在 PATH 中，共享文件夹就不会出现。
 
 **重启能释放多少空间。** 交换空间（swap）、macOS 开机时清空的临时文件夹，以及仍被应用打开着的已删除文件，都不是任何清理工具能删除的文件；磁盘快满时，它们加起来可能有几十 GB。当它们超过剩余空间时，`cdm` 会在磁盘那一行下面说明，并在菜单里再显示一次，同时列出仍打开着已删除文件的应用：退出这些应用，不用重启就能释放这一部分。
 
@@ -73,8 +73,8 @@ cdm
 - **无论规则怎么写都绝不碰的位置：** `~/Documents`、`~/Desktop`、`~/Downloads`、`~/Pictures`、`~/.ssh` 和 iCloud Drive。这道防线位于规则引擎之下，规则无法绕过它。
 - **只有被仓库 git 忽略的文件夹才算项目垃圾。** 仅仅匹配 `dist`、`build` 或 `Pods` 这样的名字是不够的——cdm 会用 git 确认该目录既被忽略*又*未被跟踪，所以存放发布脚本、受版本控制的 `build/`，或已提交的 `dist/`，都会原样保留。
 - **`.env*` 文件永远不会被列入删除。** 即使它们被 git 忽略，项目扫描也会跳过——里面存放着无法重新生成的密钥和本地配置。
-- **应用沙盒以及归 Apple 或系统所有的数据永远不会被动到。**
-- 已安装应用的列表读取自 **LaunchServices**，所以 prefPane、插件等非 `.app` 包不会被误判为残留。
+- **应用沙盒以及归 Apple 或系统所有的数据永远不会被动到。** 唯一的例外是已卸载的 Docker Desktop 的容器（存放其虚拟机磁盘），它只出现在默认不勾选的 (optional) 行中。
+- 已安装应用的列表读取自 **LaunchServices**，所以 prefPane、插件等非 `.app` 包不会被误判为残留。放在废纸篓里的应用，或 LaunchServices 报告已不在磁盘上的应用，都算作已卸载。
 - `--dry-run` 不会删除任何东西。
 - 每一次运行都会记录到 `~/.cleandevmac/clean.log`。
 

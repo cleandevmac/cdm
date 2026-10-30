@@ -633,6 +633,14 @@ function run(argv) {
   (o.locations       || []).forEach(function(l){ out.push(tab('L', l.path || '', l.strip || '')); });
   (o.skipPrefixes    || []).forEach(function(p){ out.push(tab('SKIP', p)); });
   (o.sharedComponents|| []).forEach(function(p){ out.push(tab('SHARED', p)); });
+  (o.apps || []).forEach(function(a){
+    out.push(tab('APP', a.id || '', a.name || '', a.note || ''));
+    (a.paths    || []).forEach(function(p){ out.push(tab('APATH', p)); });
+    (a.optional || []).forEach(function(p){ out.push(tab('AOPT', p)); });
+  });
+  (o.keptByCommand || []).forEach(function(k){
+    (k.cmds || []).forEach(function(c){ out.push(tab('KCMD', k.path || '', c)); });
+  });
   return out.join('\n');
 }
 JXA
@@ -662,8 +670,12 @@ CONT_ICON=(); CONT_NAME=(); CONT_METHOD=(); CONT_DEFAULT=(); CONT_DESC=(); CONT_
 # scan_toolchains), and the rustup its clean runs.
 TC_ON=0; TC_ICON=""; TC_NAME=""; TC_DEFAULT=0; TC_DESC=""; TC_GLOBS=""; RUSTUP_BIN=""
 
-# Orphan-detection config.
+# Orphan-detection config. ORPH_APP_*: one entry per "apps" item, its paths
+# and optional paths newline-separated as written in the rules.
 ORPH_LOC_PATH=(); ORPH_LOC_STRIP=(); SKIP_PREFIXES=(); SHARED_COMPONENTS=()
+ORPH_APP_ID=(); ORPH_APP_NAME=(); ORPH_APP_NOTE=(); ORPH_APP_PATHS=(); ORPH_APP_OPT=()
+# ORPH_KEEP_PATH/CMD: "keptByCommand" — a path, and a command that keeps it while on PATH.
+ORPH_KEEP_PATH=(); ORPH_KEEP_CMD=()
 
 add_category() { # icon name desc method default paths [pmethods] [procs]
     CAT_ICON[$N]="$1"; CAT_NAME[$N]="$2"; CAT_DESC[$N]="$3"
@@ -1036,6 +1048,8 @@ load_patterns() {
     CONT_ICON=(); CONT_NAME=(); CONT_METHOD=(); CONT_DEFAULT=(); CONT_DESC=(); CONT_ENGINES=(); CONT_N=0
     TC_ON=0; TC_ICON=""; TC_NAME=""; TC_DEFAULT=0; TC_DESC=""; TC_GLOBS=""
     ORPH_LOC_PATH=(); ORPH_LOC_STRIP=(); SKIP_PREFIXES=(); SHARED_COMPONENTS=()
+    ORPH_APP_ID=(); ORPH_APP_NAME=(); ORPH_APP_NOTE=(); ORPH_APP_PATHS=(); ORPH_APP_OPT=()
+    ORPH_KEEP_PATH=(); ORPH_KEEP_CMD=()
     PARSED_OK=0
 
     # Pattern files are every staged *.json except index.json and the exact
@@ -1148,12 +1162,24 @@ EOF
 
 # parse_orphan_stream <file>
 parse_orphan_stream() {
-    local typ a b us=$'\x1f'
-    while IFS="$us" read -r typ a b; do
+    local typ a b c n us=$'\x1f'
+    while IFS="$us" read -r typ a b c; do
         case "$typ" in
             L) ORPH_LOC_PATH[${#ORPH_LOC_PATH[@]}]="$a"; ORPH_LOC_STRIP[${#ORPH_LOC_STRIP[@]}]="$b" ;;
             SKIP) SKIP_PREFIXES[${#SKIP_PREFIXES[@]}]="$a" ;;
             SHARED) SHARED_COMPONENTS[${#SHARED_COMPONENTS[@]}]="$a" ;;
+            APP) n=${#ORPH_APP_ID[@]}
+                 ORPH_APP_ID[$n]="$a"; ORPH_APP_NAME[$n]="$b"; ORPH_APP_NOTE[$n]="$c"
+                 ORPH_APP_PATHS[$n]=""; ORPH_APP_OPT[$n]="" ;;
+            APATH) [ "${#ORPH_APP_ID[@]}" -gt 0 ] || continue
+                   n=$((${#ORPH_APP_ID[@]} - 1))
+                   ORPH_APP_PATHS[$n]="${ORPH_APP_PATHS[$n]:+${ORPH_APP_PATHS[$n]}
+}$a" ;;
+            KCMD) ORPH_KEEP_PATH[${#ORPH_KEEP_PATH[@]}]="$a"; ORPH_KEEP_CMD[${#ORPH_KEEP_CMD[@]}]="$b" ;;
+            AOPT) [ "${#ORPH_APP_ID[@]}" -gt 0 ] || continue
+                  n=$((${#ORPH_APP_ID[@]} - 1))
+                  ORPH_APP_OPT[$n]="${ORPH_APP_OPT[$n]:+${ORPH_APP_OPT[$n]}
+}$a" ;;
         esac
     done < <(parse_json_file "$1")
 }
@@ -2029,11 +2055,34 @@ EOF
 # ---------------------------------------------------------------------------
 INSTALLED="$SCAN_DIR/installed.txt"
 
+# lsr_live <ids-file> — copy an `lsregister -dump` from stdin, leaving out the
+# records of apps that are gone: in a Trash, or "not found on disk" on a mounted
+# volume, plus default-app choices, which outlive the app. Each live record's
+# identifier also goes to <ids-file>, so a one-dot id such as md.obsidian, which
+# the bundle-id grep cannot see, is known too.
+# see docs/DESIGN.md#dead-launchservices-records
+lsr_live() {
+    awk -v ids="$1" '
+        function flush() {
+            if (!dead) { printf "%s", blk; if (id != "") print id > ids }
+            blk = id = ""; dead = nf = mnt = 0
+        }
+        /^--------------------/ { flush() }
+        /^handlerpref id:/ { dead = 1 }
+        /^identifier:/ { id = $2 }
+        /^path:/ && /\/\.Trash(es)?\// { dead = 1 }
+        /^Bundle node not found on disk/ { nf = 1 }
+        /^mount state: *mounted/ { mnt = 1 }
+        { blk = blk $0 "\n"; if (nf && mnt) dead = 1 }
+        END { flush() }'
+}
+
 build_installed_set() {
     local lsr="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
     (
-        [ -x "$lsr" ] && "$lsr" -dump 2>/dev/null \
+        [ -x "$lsr" ] && "$lsr" -dump 2>/dev/null | lsr_live "$SCAN_DIR/inst_ids" \
             | grep -oE '[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z0-9_-]+){2,}'
+        cat "$SCAN_DIR/inst_ids" 2>/dev/null
     ) > "$SCAN_DIR/inst_lsr" 2>/dev/null &
     (
         mdfind 'kMDItemContentType==com.apple.application-bundle' 2>/dev/null | while IFS= read -r app; do
@@ -2103,10 +2152,40 @@ looks_like_bundle_id() {
     return 0
 }
 
+# looks_like_app_id <id> — an "apps" id from orphans.json: the same characters,
+# but one dot is enough (md.obsidian, notion.id are real bundle ids).
+looks_like_app_id() {
+    case "$1" in ?*.?*) : ;; *) return 1 ;; esac
+    looks_like_bundle_id "$1.x"
+}
+
+# _orphan_app_paths <key> <patterns> — register_orphans' helper: append every
+# existing match of each "apps" pattern to its raw list under <key>. Reads the
+# caller's raw and kept, and adds each pattern to its claimed.
+_orphan_app_paths() {
+    local p m
+    while IFS= read -r p; do
+        case "$p" in "~/"?*) : ;; *) continue ;; esac
+        case "$kept$NL$claimed$NL" in *"$NL$p$NL"*) continue ;; esac
+        claimed="$claimed$NL$p"
+        _glob_matches "$(expand_tilde "$p")"
+        while IFS= read -r m; do
+            [ -n "$m" ] || continue
+            is_safe_target "$m" || continue
+            printf '%s\t%s\n' "$1" "$m" >> "$raw"
+        done <<EOF
+$_GM
+EOF
+    done <<EOF
+$2
+EOF
+}
+
 # register_orphans — scan the configured locations for leftover reverse-DNS
-# folders and add one category per orphaned bundle id (all paths grouped).
+# folders, add the "apps" paths of every app that is gone, and add one category
+# per orphaned bundle id (all paths grouped), plus one per app's optional paths.
 register_orphans() {
-    [ "${#ORPH_LOC_PATH[@]}" -gt 0 ] || return 0
+    [ "${#ORPH_LOC_PATH[@]}" -gt 0 ] || [ "${#ORPH_APP_ID[@]}" -gt 0 ] || return 0
     local raw="$SCAN_DIR/orphans_raw.txt"
     : > "$raw"
     local li
@@ -2128,19 +2207,62 @@ register_orphans() {
             printf '%s\t%s\n' "$bid" "$entry" >> "$raw"
         done
     done
+    # Data an app keeps under a name that is not its bundle id (VS Code's
+    # ~/.vscode). A path two apps list stays while either is installed, and
+    # joins the first gone app's row only. Optional paths (shared with a CLI, or
+    # a sandbox) get a row of their own. see docs/DESIGN.md#orphan-app-paths
+    local ai kept="" claimed="" akeep=()
+    ai=0
+    while [ "$ai" -lt "${#ORPH_APP_ID[@]}" ]; do
+        bid="${ORPH_APP_ID[$ai]}"
+        if looks_like_app_id "$bid" && ! bid_is_kept "$bid"; then akeep[$ai]=0
+        else akeep[$ai]=1; kept="$kept$NL${ORPH_APP_PATHS[$ai]}$NL${ORPH_APP_OPT[$ai]:-}"
+        fi
+        ai=$((ai + 1))
+    done
+    # A folder a command-line tool still on PATH uses stays, whoever lists it.
+    ai=0
+    while [ "$ai" -lt "${#ORPH_KEEP_PATH[@]}" ]; do
+        type -P "${ORPH_KEEP_CMD[$ai]}" >/dev/null 2>&1 && kept="$kept$NL${ORPH_KEEP_PATH[$ai]}"
+        ai=$((ai + 1))
+    done
+    ai=0
+    while [ "$ai" -lt "${#ORPH_APP_ID[@]}" ]; do
+        if [ "${akeep[$ai]}" = 0 ]; then
+            _orphan_app_paths "${ORPH_APP_ID[$ai]}" "${ORPH_APP_PATHS[$ai]}"
+            _orphan_app_paths "${ORPH_APP_ID[$ai]}#optional" "${ORPH_APP_OPT[$ai]:-}"
+        fi
+        ai=$((ai + 1))
+    done
     [ -s "$raw" ] || return 0
     # LC_ALL=C: a bid dropped here loses its whole orphan group.
     # see docs/DESIGN.md#sort-u-collation
-    local bid
+    local bid id label desc
     for bid in $(cut -f1 "$raw" | LC_ALL=C sort -u); do
         local paths="" rb rp
         while IFS=$'\t' read -r rb rp; do
-            [ "$rb" = "$bid" ] && paths="${paths:+$paths
+            [ "$rb" = "$bid" ] || continue
+            case "$NL$paths$NL" in *"$NL$rp$NL"*) continue ;; esac
+            paths="${paths:+$paths
 }$rp"
         done < "$raw"
-        add_category "👻" "Orphaned: $bid" \
-            "Leftover data — no installed app owns '$bid'. Moved to Trash (recoverable)." \
-            "trash" 0 "$paths"
+        id="${bid%#optional}"
+        ai=0
+        while [ "$ai" -lt "${#ORPH_APP_ID[@]}" ] && [ "${ORPH_APP_ID[$ai]}" != "$id" ]; do
+            ai=$((ai + 1))
+        done
+        if [ -n "${ORPH_APP_NAME[$ai]:-}" ]; then
+            label="${ORPH_APP_NAME[$ai]}"
+            desc="Everything $label left behind, settings included — no installed app owns '$id'. Moved to Trash (recoverable)."
+        else
+            label="$id"
+            desc="Leftover data — no installed app owns '$id'. Moved to Trash (recoverable)."
+        fi
+        if [ "$id" != "$bid" ]; then
+            label="$label (optional)"
+            desc="Check first — ${ORPH_APP_NOTE[$ai]:-also used by other tools.} Moved to Trash (recoverable)."
+        fi
+        add_category "👻" "Orphaned: $label" "$desc" "trash" 0 "$paths"
     done
 }
 

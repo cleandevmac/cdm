@@ -60,7 +60,7 @@ cdm
 
 **6. Docker / Podman** — `system prune -af`，以及對每個 buildx builder 的快取執行 `buildx prune -af`（已停止的 builder 會為此啟動，完成後再停止），需自行選擇啟用。具名磁碟區永遠不會被刪除。
 
-**7. 殘留的應用程式資料** — 屬於那些已經不再安裝的應用程式的 Application Support、Caches 與 Preferences。
+**7. 殘留的應用程式資料** — 屬於那些已經不再安裝的應用程式的 Application Support、Caches 與 Preferences，以及一些應用程式以自己名稱保存的資料夾：VS Code 的 `~/.vscode` 與 `Application Support/Code`、Cursor、Zed、Docker Desktop、Postman、Slack、JetBrains IDE、Android Studio 等，列在 `orphans.json` 中。命令列工具也會用到的資料夾（`~/.docker`、`~/.ollama`、`~/.codex`、`~/.android`、`~/.cursor`）以及 Docker Desktop 的虛擬機磁碟，會單獨放在一列 **(optional)** 中，並說明何時應該保留；只要使用它的命令（`docker`、`ollama`、`codex`、`adb` 等）還在 PATH 中，共用資料夾就不會出現。
 
 **重新開機能釋放多少空間。** 交換空間（swap）、macOS 開機時清空的暫存資料夾，以及仍被應用程式開啟著的已刪除檔案，都不是任何清理工具能刪除的檔案；磁碟快滿時，它們加起來可能有數十 GB。當它們超過剩餘空間時，`cdm` 會在磁碟那一行下方說明，並在選單中再顯示一次，同時列出仍開啟著已刪除檔案的應用程式：結束這些應用程式，不必重新開機就能釋放這一部分。
 
@@ -73,8 +73,8 @@ cdm
 - **無論規則怎麼寫都絕不碰的位置：** `~/Documents`、`~/Desktop`、`~/Downloads`、`~/Pictures`、`~/.ssh` 與 iCloud 雲碟。這道防線位在規則引擎之下，規則無法繞過它。
 - **只有被儲存庫 git 忽略的資料夾才算專案垃圾。** 只符合 `dist`、`build` 或 `Pods` 這類名稱並不夠——cdm 會用 git 確認該目錄既被忽略*又*未被追蹤，因此存放發佈腳本、受版本控制的 `build/`，或已提交的 `dist/`，都會原封不動。
 - **`.env*` 檔案永遠不會被列入刪除。** 即使被 git 忽略，專案掃描也會跳過它們——裡面放的是無法重新產生的密鑰與本機設定。
-- **應用程式沙箱以及屬於 Apple 或系統的資料永遠不會被動到。**
-- 已安裝應用程式的清單讀取自 **LaunchServices**，因此 prefPane、外掛等非 `.app` 套件不會被誤判為殘留。
+- **應用程式沙箱以及屬於 Apple 或系統的資料永遠不會被動到。** 唯一的例外是已解除安裝的 Docker Desktop 的容器（存放其虛擬機磁碟），它只出現在預設不勾選的 (optional) 列中。
+- 已安裝應用程式的清單讀取自 **LaunchServices**，因此 prefPane、外掛等非 `.app` 套件不會被誤判為殘留。放在垃圾桶裡的應用程式，或 LaunchServices 回報已不在磁碟上的應用程式，都算作已解除安裝。
 - `--dry-run` 不會刪除任何東西。
 - 每一次執行都會記錄到 `~/.cleandevmac/clean.log`。
 

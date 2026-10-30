@@ -60,7 +60,7 @@ Asegúrate de que `~/.local/bin` esté en tu `PATH` (`export PATH="$HOME/.local/
 
 **6. Docker / Podman** — `system prune -af`, y `buildx prune -af` sobre la caché de cada builder de buildx (un builder detenido se arranca para ello y se vuelve a detener), opcional. Los volúmenes con nombre nunca se borran.
 
-**7. Datos de aplicaciones huérfanos** — Application Support, Caches y Preferences que pertenecen a aplicaciones que ya no están instaladas.
+**7. Datos de aplicaciones huérfanos** — Application Support, Caches y Preferences que pertenecen a aplicaciones que ya no están instaladas, además de las carpetas que algunas aplicaciones guardan con su propio nombre: `~/.vscode` y `Application Support/Code` de VS Code, Cursor, Zed, Docker Desktop, Postman, Slack, los IDE de JetBrains, Android Studio y unas 30 más listadas en `orphans.json`. Las carpetas que también usa una herramienta de línea de comandos (`~/.docker`, `~/.ollama`, `~/.codex`, `~/.android`, `~/.cursor`) y el disco de la VM de Docker Desktop van en una fila aparte **(optional)** que explica cuándo conservarlas, y una carpeta compartida nunca se ofrece mientras un comando que la usa (`docker`, `ollama`, `codex`, `adb`, …) siga en tu PATH.
 
 **Lo que liberaría un reinicio.** El swap, las carpetas temporales que macOS vacía al arrancar y los archivos borrados que una app aún mantiene abiertos no son archivos que ningún limpiador pueda borrar, y en un disco lleno pueden sumar decenas de GB. Cuando superan el espacio libre, `cdm` lo indica bajo la línea del disco, y de nuevo en el menú, y nombra las apps que retienen archivos borrados: cerrarlas libera esa parte sin reiniciar.
 
@@ -73,8 +73,8 @@ Asegúrate de que `~/.local/bin` esté en tu `PATH` (`export PATH="$HOME/.local/
 - **Nunca se tocan, digan lo que digan las reglas:** `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`, `~/.ssh` y iCloud Drive. Esta protección está por debajo del motor de reglas: una regla no puede saltársela.
 - **Una carpeta solo es basura del proyecto si tu repositorio la ignora en git.** Coincidir con un nombre como `dist`, `build` o `Pods` no basta: cdm comprueba con git que el directorio esté ignorado *y* sin seguimiento, así que un `build/` con scripts de publicación bajo control de versiones o un `dist/` confirmado se quedan como están.
 - **Los archivos `.env*` nunca se ofrecen para borrar.** El escaneo de proyectos los salta aunque estén ignorados por git: guardan secretos y configuración local que nada regenera.
-- **Los sandboxes de aplicaciones y los datos propiedad de Apple o del sistema nunca se tocan.**
-- La lista de aplicaciones instaladas se lee de **LaunchServices**, así que los prefPanes, plugins y otros paquetes que no son `.app` no se marcan por error como huérfanos.
+- **Los sandboxes de aplicaciones y los datos propiedad de Apple o del sistema nunca se tocan.** La única excepción es el contenedor de un Docker Desktop desinstalado, que guarda el disco de su VM; solo se ofrece en una fila (optional) sin marcar.
+- La lista de aplicaciones instaladas se lee de **LaunchServices**, así que los prefPanes, plugins y otros paquetes que no son `.app` no se marcan por error como huérfanos. Una aplicación que está en la Papelera, o que LaunchServices da por desaparecida, cuenta como desinstalada.
 - `--dry-run` no borra nada.
 - Cada ejecución se registra en `~/.cleandevmac/clean.log`.
 

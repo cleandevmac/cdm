@@ -298,6 +298,41 @@ EOF
 assert_eq "~/Library/Preferences" "$OA" "location path"
 assert_eq ".plist"                "$OB" "a present strip lands in the strip column"
 
+# An orphan "apps" entry is APP<US>id<US>name<US>note, then one APATH per path
+# and one AOPT per optional path. An omitted name or note is an empty field, and
+# parse_orphan_stream keeps each path with the entry above it — a path landing
+# on the wrong app would be kept or offered under that app's id.
+printf '%s\n' \
+'{ "apps": [' \
+'  { "id": "com.example.one", "paths": ["~/a b", "~/.one"] },' \
+'  { "id": "com.example.two", "name": "Two", "note": "Also the CLI'"'"'s.",' \
+'    "paths": ["~/.two"], "optional": ["~/.two-cli"] } ] }' > "$HOME/apps.json"
+assert_eq \
+"APP${US}com.example.one${US}${US}
+APATH${US}~/a b
+APATH${US}~/.one
+APP${US}com.example.two${US}Two${US}Also the CLI's.
+APATH${US}~/.two
+AOPT${US}~/.two-cli" \
+"$(parse_json_file "$HOME/apps.json")" \
+"apps emit APP, APATH and AOPT records in the documented layout"
+ORPH_APP_ID=(); ORPH_APP_NAME=(); ORPH_APP_NOTE=(); ORPH_APP_PATHS=(); ORPH_APP_OPT=()
+parse_orphan_stream "$HOME/apps.json"
+assert_eq "com.example.one|||~/a b
+~/.one|" "${ORPH_APP_ID[0]}|${ORPH_APP_NAME[0]}|${ORPH_APP_NOTE[0]}|${ORPH_APP_PATHS[0]}|${ORPH_APP_OPT[0]}" \
+    "the first app keeps its own paths, and no optional ones"
+assert_eq "com.example.two|Two|Also the CLI's.|~/.two|~/.two-cli" \
+    "${ORPH_APP_ID[1]}|${ORPH_APP_NAME[1]}|${ORPH_APP_NOTE[1]}|${ORPH_APP_PATHS[1]}|${ORPH_APP_OPT[1]}" \
+    "the second app's note, paths and optional paths stay with it"
+
+# keptByCommand is one KCMD<US>path<US>command record per command.
+printf '%s\n' '{ "keptByCommand": [ { "path": "~/.a b", "cmds": ["one", "two"] } ] }' > "$HOME/keep.json"
+assert_eq "KCMD${US}~/.a b${US}one
+KCMD${US}~/.a b${US}two" "$(parse_json_file "$HOME/keep.json")" "keptByCommand emits one KCMD per command"
+ORPH_KEEP_PATH=(); ORPH_KEEP_CMD=()
+parse_orphan_stream "$HOME/keep.json"
+assert_eq "~/.a b|two" "${ORPH_KEEP_PATH[1]}|${ORPH_KEEP_CMD[1]}" "each command keeps its path beside it"
+
 # ---- the computed kinds' fields ----------------------------------------------
 #
 # A kind that works out its offer reads its globs from "candidates" (or "images")

@@ -372,6 +372,101 @@ check_mutation 'looks_like_bundle_id stops requiring reverse-DNS' test_bundle_id
 # is the half doing the locale-proofing, and removing it is the mutation above.
 # see docs/DESIGN.md#bundle-id-shape
 
+# ---- which apps are gone (docs/DESIGN.md#dead-launchservices-records) -------
+#
+# The bug that shipped: every bundle id anywhere in `lsregister -dump` counted as
+# installed, so VS Code dragged to the Trash kept all 1.3 GB of its data out of
+# the orphan scan. Each of the first four puts one dead record back in the set.
+# The last one is the other direction: an app on an unplugged disk declared gone.
+
+check_mutation 'a default-app choice counts as installed' test_orphans.sh \
+    's@        /^handlerpref id:/ { dead = 1 }@@'
+
+check_mutation 'an app in the Trash counts as installed' test_orphans.sh \
+    's@        /^path:/ && /\\/\\\.Trash(es)?\\// { dead = 1 }@@'
+
+check_mutation 'the last record of the dump is never read' test_orphans.sh \
+    's@        END { flush() }@        END { }@'
+
+check_mutation 'one-dot identifiers are not listed' test_orphans.sh \
+    's@if (id != "") print id > ids@if (0) print id > ids@'
+
+check_mutation 'an app on an unplugged disk counts as gone' test_orphans.sh \
+    's@if (nf && mnt) dead = 1@if (nf) dead = 1@'
+
+# Not here: dropping the `cat "$SCAN_DIR/inst_ids"` from build_installed_set.
+# That function runs lsregister and mdfind, so no test can call it; lsr_live,
+# where the decisions are, is what the tests above hold.
+
+# ---- the "apps" map (docs/DESIGN.md#orphan-app-paths) -----------------------
+#
+# A row here moves an app's folders to the Trash on the strength of one id, so
+# every guard between a hand-written entry and a live app's data is mutated.
+
+check_mutation 'a shared path offered while one app still uses it' test_orphans.sh \
+    's@        case "\$kept\$NL\$claimed\$NL" in@        case "$claimed$NL" in@'
+
+check_mutation 'a shared path offered in every gone app'"'"'s row' test_orphans.sh \
+    's@        claimed="\$claimed\$NL\$p"@        :@'
+
+check_mutation 'app paths need not start with ~/' test_orphans.sh \
+    's@        case "\$p" in "~/"?\*) : ;; \*) continue ;; esac@        :@'
+
+check_mutation 'app paths skip the safety gate at scan time' test_orphans.sh \
+    's@            is_safe_target "\$m" || continue@            :@'
+
+check_mutation 'a malformed app id decides an offer' test_orphans.sh \
+    's@        if looks_like_app_id "\$bid" && ! bid_is_kept "\$bid"; then@        if ! bid_is_kept "$bid"; then@'
+
+check_mutation 'an app id may start with a dot' test_orphans.sh \
+    's@    case "\$1" in ?\*\.?\*) : ;; \*) return 1 ;; esac@    :@'
+
+check_mutation 'a path found twice is listed twice' test_orphans.sh \
+    's@            case "\$NL\$paths\$NL" in \*"\$NL\$rp\$NL"\*) continue ;; esac@            :@'
+
+check_mutation 'the row is named after the bundle id' test_orphans.sh \
+    's@            label="\${ORPH_APP_NAME\[\$ai\]}"@            :@'
+
+check_mutation 'apps need a scan location to be read' test_orphans.sh \
+    's%    \[ "\${#ORPH_LOC_PATH\[@\]}" -gt 0 \] || \[ "\${#ORPH_APP_ID\[@\]}" -gt 0 \] || return 0%    [ "${#ORPH_LOC_PATH[@]}" -gt 0 ] || return 0%'
+
+check_mutation 'every app path lands on the first app' test_json.sh \
+    's%                   n=\$((\${#ORPH_APP_ID\[@\]} - 1))%                   n=0%'
+
+# Optional paths: folders a command-line tool also uses, and Docker Desktop's
+# sandbox. Each must stay in a row of its own that says why, and stay put while
+# any app listing it is installed.
+
+check_mutation 'optional paths join the app'"'"'s own row' test_orphans.sh \
+    's@_orphan_app_paths "\${ORPH_APP_ID\[\$ai\]}#optional"@_orphan_app_paths "${ORPH_APP_ID[$ai]}"@'
+
+check_mutation 'an installed app'"'"'s optional paths are not kept' test_orphans.sh \
+    's@\$NL\${ORPH_APP_OPT\[\$ai\]:-}"$@"@'
+
+check_mutation 'the optional row loses its label' test_orphans.sh \
+    's@            label="\$label (optional)"@            :@'
+
+check_mutation 'the optional row drops its note' test_orphans.sh \
+    's@\${ORPH_APP_NOTE\[\$ai\]:-also used by other tools\.}@also used by other tools.@'
+
+check_mutation 'app paths are not globbed' test_orphans.sh \
+    's@        _glob_matches "\$(expand_tilde "\$p")"@        _GM=$(expand_tilde "$p")@'
+
+check_mutation 'parser ignores AOPT records' test_json.sh \
+    's%            AOPT) \[ "\${#ORPH_APP_ID\[@\]}" -gt 0 \] || continue%            AOPT_OFF) continue%'
+
+check_mutation 'JXA stops emitting AOPT records' test_json.sh \
+    's@out.push(tab(.AOPT., p));@@'
+
+check_mutation 'a command on PATH keeps nothing' test_orphans.sh \
+    's@        type -P "\${ORPH_KEEP_CMD\[\$ai\]}" >/dev/null 2>&1 && kept=@        false \&\& kept=@'
+
+check_mutation 'parser ignores KCMD records' test_json.sh \
+    's@            KCMD) ORPH_KEEP_PATH@            KCMD_OFF) ORPH_KEEP_PATH@'
+
+check_mutation 'JXA stops emitting KCMD records' test_json.sh \
+    's@out.push(tab(.KCMD., k.path || .., c));@@'
+
 # ---- the git-ignored proof (docs/DESIGN.md#ignored-proof) -------------------
 #
 # The bug that shipped: a name-matched dir was offered for permanent `rm` on the
