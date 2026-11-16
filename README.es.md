@@ -31,6 +31,20 @@ Prueba primero en seco: escanea e informa, no borra nada.
 curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash -s -- -n
 ```
 
+### Todas las cuentas de este Mac
+
+Con `sudo`, `cdm` se ejecuta una vez por cada cuenta de usuario del Mac, una tras otra:
+
+```bash
+curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | sudo bash
+```
+
+Cada cuenta la escanea y la limpia su propio usuario, nunca root, con la misma revisión y confirmación que una ejecución normal. Si hay más de una cuenta, pregunta antes de cada una: Enter para escanear, `s` para saltarla, `q` para parar. Las opciones como `-n` se aplican a todas las cuentas, y Ctrl-C detiene toda la ejecución. Para limpiar solo algunas cuentas, nómbralas con `--user` (repítelo para más):
+
+```bash
+curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | sudo bash -s -- --user tham
+```
+
 ## Consérvalo (opcional)
 
 Haz esto solo si quieres volver a ejecutar `cdm` sin la URL. Es lo único de aquí que sí deja un archivo:
@@ -56,7 +70,7 @@ Asegúrate de que `~/.local/bin` esté en tu `PATH` (`export PATH="$HOME/.local/
 
 **4. Cachés de Electron, navegadores y aplicaciones** — VS Code, Claude (incluidas las cachés de webview de cada vista previa y, opcionalmente, la imagen de la VM de Cowork), Slack; Chrome, Brave, Edge, Vivaldi y Arc analizados por perfil de navegador; Firefox; y cachés de SDK de fallos y telemetría (Sentry, Crashlytics, Sparkle).
 
-**5. Basura de proyectos, agrupada por repositorio** — `node_modules`, `dist`, `build`, `target`, `__pycache__` y archivos ignorados por git. Solo lo que el propio repositorio ignora en git. Desactivado por defecto; usa `-p` para habilitarlo. Las ejecuciones interactivas te lo ofrecen al terminar el escaneo de cachés.
+**5. Basura de proyectos, agrupada por repositorio** — `node_modules`, `dist`, `build`, `target`, `__pycache__` y archivos ignorados por git. Solo lo que el propio repositorio ignora en git. Las ejecuciones interactivas siempre escanean tus repositorios de código; cada fila de proyecto empieza sin marcar. `-y` los omite salvo que pases también `-p`, y aun así nunca los limpia.
 
 **6. Docker / Podman** — `system prune -af`, y `buildx prune -af` sobre la caché de cada builder de buildx (un builder detenido se arranca para ello y se vuelve a detener), opcional. Los volúmenes con nombre nunca se borran.
 
@@ -75,6 +89,7 @@ Asegúrate de que `~/.local/bin` esté en tu `PATH` (`export PATH="$HOME/.local/
 - **Los archivos `.env*` nunca se ofrecen para borrar.** El escaneo de proyectos los salta aunque estén ignorados por git: guardan secretos y configuración local que nada regenera.
 - **Los sandboxes de aplicaciones y los datos propiedad de Apple o del sistema nunca se tocan.** La única excepción es el contenedor de un Docker Desktop desinstalado, que guarda el disco de su VM; solo se ofrece en una fila (optional) sin marcar.
 - La lista de aplicaciones instaladas se lee de **LaunchServices**, así que los prefPanes, plugins y otros paquetes que no son `.app` no se marcan por error como huérfanos. Una aplicación que está en la Papelera, o que LaunchServices da por desaparecida, cuenta como desinstalada.
+- **Con `sudo`, root no borra nada.** Cada cuenta la escanea y la limpia su propio usuario, nunca root: root solo prepara una copia de `cdm` y de sus reglas en `/private/tmp` y ejecuta esa copia como cada cuenta, por turnos. Todas las cuentas usan el mismo conjunto de reglas, la limpieza de cada una se registra en su propio `~/.cleandevmac/clean.log` (indicando quién la lanzó con `sudo`) y lo que va a la Papelera acaba en su propia Papelera.
 - `--dry-run` no borra nada.
 - Cada ejecución se registra en `~/.cleandevmac/clean.log`.
 
@@ -92,6 +107,8 @@ Asegúrate de que `~/.local/bin` esté en tu `PATH` (`export PATH="$HOME/.local/
 | `q` (o `Esc`) | Salir |
 
 Después de una limpieza imprime el resumen y pregunta qué sigue: `r` volver a escanear · `b` invitarme a un café · `q` salir (la opción por defecto — Enter o cualquier otra tecla hacen lo mismo).
+
+Las teclas que pulses mientras `cdm` escanea o limpia se ignoran: no se muestran y se descartan cuando termina el trabajo, así que un Enter suelto no puede abrir los detalles de una fila ni responder a una pregunta.
 
 Los elementos se ordenan de mayor a menor. Las cachés regenerables seguras vienen premarcadas; el repositorio de Maven, los navegadores de Playwright, los registros de fallos, las piezas de SDK instaladas, las transcripciones antiguas de Claude Code, las carpetas de proyectos y los datos de aplicaciones huérfanos empiezan sin marcar. `s` restablece esa selección por defecto.
 
@@ -120,7 +137,8 @@ Algunas categorías fijan un `kind`, y el script calcula lo que ofrecen: `androi
 | --- | --- |
 | `-n`, `--dry-run` | Escanea e informa; no borra nada |
 | `-y`, `--yes` | No interactivo: limpia las cachés seguras premarcadas y sale. Nunca toca carpetas de proyectos, datos de aplicaciones huérfanos ni la Papelera |
-| `-p`, `--projects` | Analiza también los repositorios de código en busca de basura de proyectos |
+| `-p`, `--projects` | Con `-y`: analiza también los repositorios de código y muestra su basura de proyectos en el informe (`-y` nunca la limpia). Las ejecuciones interactivas siempre escanean los repositorios de código |
+| `-u`, `--user NAME` | Con `sudo`: solo esta cuenta; repítelo para más. Sin ella, `sudo` ejecuta `cdm` para cada cuenta de este Mac, una por una |
 | `--patterns SRC` | Carga las reglas desde un directorio local o una URL base |
 | `--no-color` | Desactiva el color ANSI |
 | `-h`, `--help` | Uso |

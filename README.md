@@ -31,6 +31,20 @@ Dry run first — scans and reports, deletes nothing:
 curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash -s -- -n
 ```
 
+### Every account on this Mac
+
+With `sudo`, `cdm` runs once for each user account on the Mac, one after another:
+
+```bash
+curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | sudo bash
+```
+
+Each account is scanned and cleaned by its own user, never by root, with the same review and confirm as a normal run. When there is more than one account, it asks before each: Enter to scan, `s` to skip, `q` to stop. Flags like `-n` apply to every account, and Ctrl-C stops the whole run. To clean only some accounts, name them with `--user` (repeat it for more):
+
+```bash
+curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | sudo bash -s -- --user tham
+```
+
 ## Keep it around (optional)
 
 Only do this if you want to run `cdm` again without the URL. It is the one thing here that does leave a file behind:
@@ -56,7 +70,7 @@ Make sure `~/.local/bin` is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH
 
 **4. Electron, browser & app caches** — VS Code (including the agent SDK it downloads), Claude (including per-preview webview caches and, opt-in, the Cowork VM image and the Claude Code builds older than the one it runs), Slack, EasyEDA; Chrome, Brave, Edge, Vivaldi and Arc scanned per browser profile; Firefox; the copy of itself Chrome makes at each launch, which a crashed or killed browser (say, under a test script) leaves behind — never one a running browser may use; installed-update leftovers; crash/telemetry SDK caches (Sentry, Crashlytics, Sparkle); and, opt-in, Chrome's on-device AI models and the aerial wallpaper videos macOS downloads into every account.
 
-**5. Project junk, grouped per repo** — `node_modules`, `dist`, `build`, `target`, `__pycache__`, and git-ignored files. Only ever what the repo itself git-ignores. Off by default; pass `-p` to enable it. Interactive runs offer it after the cache scan finishes.
+**5. Project junk, grouped per repo** — `node_modules`, `dist`, `build`, `target`, `__pycache__`, and git-ignored files. Only ever what the repo itself git-ignores. Interactive runs always scan your code repos; every project row starts unchecked. `-y` skips them unless you also pass `-p`, and even then never cleans them.
 
 **6. Docker / Podman** — `system prune -af`, plus `buildx prune -af` on each buildx builder's cache (a stopped builder is started for it and stopped again), opt-in. Named volumes are never deleted.
 
@@ -76,6 +90,7 @@ Make sure `~/.local/bin` is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH
 - **`.env*` files are never offered for deletion.** The project scan skips them even though they're git-ignored — they hold secrets and local config nothing regenerates.
 - **App sandboxes and Apple/system-owned data are never touched.** The one exception is an uninstalled Docker Desktop's container, which holds its VM disk; it is offered only in an unchecked (optional) row.
 - The installed-app list is read from **LaunchServices**, so prefPanes, plugins and other non-`.app` bundles aren't mis-flagged as orphaned. An app sitting in the Trash, or one LaunchServices reports as gone, counts as uninstalled.
+- **Under `sudo`, root deletes nothing.** Each account is scanned and cleaned by its own user, never by root: root only stages a copy of `cdm` and its rules in `/private/tmp` and runs that copy as each account in turn. Every account gets the same rule set, its clean is logged in its own `~/.cleandevmac/clean.log` (noting who ran it with `sudo`), and its Trash items go to its own Trash.
 - `--dry-run` deletes nothing.
 - Every run is logged to `~/.cleandevmac/clean.log`.
 
@@ -93,6 +108,8 @@ Make sure `~/.local/bin` is on your `PATH` (`export PATH="$HOME/.local/bin:$PATH
 | `q` (or `Esc`) | Quit |
 
 After a clean it prints the receipt and asks what next: `r` rescan · `b` buy me a coffee · `q` quit (the default — Enter or any other key does the same).
+
+Keys pressed while `cdm` is scanning or cleaning are ignored: they are not echoed and are thrown away when the work finishes, so a stray Enter can neither open a row's details nor answer a prompt.
 
 Items are sorted biggest-first. Safe regenerable caches are pre-selected; the Maven repository, Playwright browsers, crash logs, installed SDK pieces, old Claude Code transcripts, project folders and orphaned app data all start unchecked — `s` resets to that default selection.
 
@@ -121,7 +138,8 @@ A few categories set a `kind`, and the script works out what they offer: `androi
 | --- | --- |
 | `-n`, `--dry-run` | Scan and report; delete nothing |
 | `-y`, `--yes` | Non-interactive: clean the pre-selected safe caches, then exit. Never touches project folders, orphaned app data, or the Trash |
-| `-p`, `--projects` | Also scan code repos for project junk |
+| `-p`, `--projects` | With `-y`: also scan code repos and list their project junk in the report (`-y` never cleans it). Interactive runs always scan code repos |
+| `-u`, `--user NAME` | With `sudo`: only this account; repeat for more. Without it, `sudo` runs `cdm` for every account on this Mac, one at a time |
 | `--patterns SRC` | Load rules from a local directory or a base URL |
 | `--no-color` | Disable ANSI color |
 | `-h`, `--help` | Usage |

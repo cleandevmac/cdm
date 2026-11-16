@@ -24,11 +24,15 @@
 # beside it, and every assertion here would still pass without it. Refusing to
 # answer unless cdm asked for -x is what gives the suite a grip on that flag,
 # which is otherwise the real pgrep's job and untestable from a shim.
+# It also refuses unless asked for this account's processes only (-U <uid>): with
+# several accounts logged in, another account's Chrome does not rewrite this
+# account's caches, and must not trigger "quit Chrome first".
 FAKE_RUNNING=""
 pgrep() {
-    local n
+    local n prev="" own=0
     case "$1" in *x*) : ;; *) return 1 ;; esac
-    for n; do :; done
+    for n; do [ "$prev" = "-U" ] && [ "$n" = "$UID" ] && own=1; prev="$n"; done
+    [ "$own" -eq 1 ] || return 1
     case "$FAKE_RUNNING" in *"|$n|"*) return 0 ;; *) return 1 ;; esac
 }
 

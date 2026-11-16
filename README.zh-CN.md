@@ -31,6 +31,20 @@ curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash
 curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash -s -- -n
 ```
 
+### 这台 Mac 上的所有账户
+
+加上 `sudo`，`cdm` 会为这台 Mac 上的每个用户账户各运行一次，一个接一个：
+
+```bash
+curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | sudo bash
+```
+
+每个账户都由它自己的用户扫描和清理，从不由 root 来做，审阅和确认与普通运行相同。账户不止一个时，它会在每个账户之前询问：Enter 扫描，`s` 跳过，`q` 停止。`-n` 等选项对每个账户都生效，Ctrl-C 会停止整个运行。只想清理部分账户时，用 `--user` 指定名字（多个就重复使用）：
+
+```bash
+curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | sudo bash -s -- --user tham
+```
+
 ## 留在本地（可选）
 
 只有当你想不带 URL 再次运行 `cdm` 时才需要这样做。这是这里唯一会留下文件的做法：
@@ -56,7 +70,7 @@ cdm
 
 **4. Electron、浏览器与应用缓存** — VS Code、Claude（包括每个预览的 webview 缓存，以及可选的 Cowork 虚拟机镜像）、Slack；Chrome、Brave、Edge、Vivaldi 和 Arc 会按浏览器配置文件分别扫描；Firefox；以及崩溃／遥测 SDK 的缓存（Sentry、Crashlytics、Sparkle）。
 
-**5. 项目垃圾，按仓库分组** — `node_modules`、`dist`、`build`、`target`、`__pycache__`，以及被 git 忽略的文件。只会是仓库自己用 git 忽略的内容。默认关闭，传入 `-p` 启用。交互式运行时，会在缓存扫描结束后询问你是否要扫描。
+**5. 项目垃圾，按仓库分组** — `node_modules`、`dist`、`build`、`target`、`__pycache__`，以及被 git 忽略的文件。只会是仓库自己用 git 忽略的内容。交互式运行总会扫描你的代码仓库；每个项目行都默认不勾选。`-y` 会跳过它们，除非同时传入 `-p`，而即便如此也从不清理它们。
 
 **6. Docker / Podman** — `system prune -af`，以及对每个 buildx builder 的缓存执行 `buildx prune -af`（已停止的 builder 会为此启动，完成后再停止），需要主动选择。具名卷永远不会被删除。
 
@@ -75,6 +89,7 @@ cdm
 - **`.env*` 文件永远不会被列入删除。** 即使它们被 git 忽略，项目扫描也会跳过——里面存放着无法重新生成的密钥和本地配置。
 - **应用沙盒以及归 Apple 或系统所有的数据永远不会被动到。** 唯一的例外是已卸载的 Docker Desktop 的容器（存放其虚拟机磁盘），它只出现在默认不勾选的 (optional) 行中。
 - 已安装应用的列表读取自 **LaunchServices**，所以 prefPane、插件等非 `.app` 包不会被误判为残留。放在废纸篓里的应用，或 LaunchServices 报告已不在磁盘上的应用，都算作已卸载。
+- **在 `sudo` 下，root 不删除任何东西。** 每个账户都由它自己的用户扫描和清理，从不由 root 来做：root 只是把 `cdm` 及其规则的一份副本放到 `/private/tmp`，再以每个账户的身份依次运行这份副本。所有账户使用同一套规则，每个账户的清理记录在它自己的 `~/.cleandevmac/clean.log` 中（注明是谁用 `sudo` 运行的），移到废纸篓的内容进入该账户自己的废纸篓。
 - `--dry-run` 不会删除任何东西。
 - 每一次运行都会记录到 `~/.cleandevmac/clean.log`。
 
@@ -92,6 +107,8 @@ cdm
 | `q`（或 `Esc`） | 退出 |
 
 清理完成后会打印结果，并询问下一步：`r` 重新扫描 · `b` 请我喝杯咖啡 · `q` 退出（默认——按 Enter 或任意其他键同样是退出）。
+
+`cdm` 扫描或清理期间按下的键会被忽略：不会显示出来，并在工作结束时被丢弃，所以误按的 Enter 既不会打开某一行的详情，也不会回答任何提问。
 
 条目按占用从大到小排列。可安全再生的缓存会预先勾选；Maven 仓库、Playwright 浏览器、崩溃日志、已安装的 SDK 组件、旧的 Claude Code 对话记录、项目文件夹和残留的应用数据默认都不勾选——按 `s` 会重置回这套默认选择。
 
@@ -120,7 +137,8 @@ cdm
 | --- | --- |
 | `-n`, `--dry-run` | 扫描并报告；不删除任何东西 |
 | `-y`, `--yes` | 非交互模式：清理预先勾选的安全缓存后退出。绝不触碰项目文件夹、残留应用数据或废纸篓 |
-| `-p`, `--projects` | 同时扫描代码仓库中的项目垃圾 |
+| `-p`, `--projects` | 配合 `-y`：同时扫描代码仓库，并在报告中列出其中的项目垃圾（`-y` 从不清理它们）。交互式运行总会扫描代码仓库 |
+| `-u`, `--user NAME` | 配合 `sudo`：只处理这个账户；多个就重复使用。不加它时，`sudo` 会为这台 Mac 上的每个账户逐个运行 `cdm` |
 | `--patterns SRC` | 从本地目录或基础 URL 加载规则 |
 | `--no-color` | 关闭 ANSI 颜色 |
 | `-h`, `--help` | 用法 |

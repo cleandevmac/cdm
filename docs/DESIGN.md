@@ -42,6 +42,153 @@ old Claude Code transcripts are moved to the Trash so they can be restored; a
 Rust toolchain, or a toolchain's offline docs, is removed by rustup itself.
 --dry-run only looks.
 
+<a id="sudo-accounts"></a>
+## Every account, under sudo
+
+`curl … | sudo bash` cleans every user account on the Mac, one after another.
+A Mac with several accounts logged in at once (fast user switching) keeps most
+of the disk the owner cannot reach in the other homes.
+
+**Root deletes nothing.** Run as root, cdm never scans or deletes anything
+itself. It becomes a dispatcher: it lists the accounts (`account_rows`), stages
+one root-owned copy of itself and the rules, and runs that copy once per
+account, **as that account's own user** (`run_accounts`). Each of those runs is
+an ordinary cdm run: the same scan, menu, confirm and `is_safe_target`, its own
+`~/.cleandevmac/clean.log`, its own `~/.Trash`. Nothing below the dispatcher
+changes. The alternative, root walking every home and deleting, would be wrong
+four ways:
+
+- root bypasses every permission, so `is_safe_target`'s containment checks
+  would be the only thing between a rule and another user's files;
+- every file root writes into a home (the log, `~/.cleandevmac`, a staged
+  rules copy) would be root-owned and lock that user out of it;
+- `git`, `rustup`, `docker` and friends would run as root, against that
+  account's repos and toolchains, leaving root-owned files behind;
+- "move to the Trash" would go to root's Trash, not the account's, so nothing
+  would be recoverable where the user looks for it.
+
+**The stdin copy.** Under `curl … | sudo bash` the script is stdin and nothing
+is on disk, but each account's run needs a file to read. The block right after
+`set -u` handles that case (root, and `BASH_SOURCE[0]` empty): it makes a
+`/private/tmp/cdm.XXXXXX` and writes the rest of the script there. bash reading
+a script from a pipe reads only up to the end of the current command, so a
+`cat` inside the `if … fi` gets exactly the rest of the script; the copy starts
+with `#!/bin/bash` and `set -u` in place of the block. Under
+`sudo bash -c "$(curl …)"` the whole script is `BASH_EXECUTION_STRING`. Then it
+runs the copy with stdin from `/dev/null`, removes the copy's folder once that
+run ends, and exits with its status. Not `exec`: the copy can exit before its
+own cleanup trap is set (`--help`, a bad option, a `--user` error), and the
+folder would be left in `/private/tmp`. The `[ ! -t 0 ]` guard is for
+`sudo bash` typed at a prompt with no script at all: `cat` would wait on the
+keyboard forever. With neither source it says how to run it from a file.
+
+**Where root stages, and with what modes.** Root runs system tools only
+(`PATH=/usr/bin:/bin:/usr/sbin:/sbin`) and stages in `/private/tmp`, never in
+its own `$TMPDIR`: root's `/var/folders/…/T` is mode 700, so no account could
+read the copy. When root runs from the bootstrap's copy it reuses that folder
+as its `SCAN_DIR` only when the path is exactly `/private/tmp/cdm.??????/cdm`
+and the folder is a real directory (not a symlink) owned by root; an inherited
+`SCAN_DIR` is never used, since `cleanup_on_exit` `rm -rf`s it. The folder is
+`711` (each account can open the two known paths in it, but not list it), the
+rules folder `755`, the copy and every rule file `644`; everything else root
+writes there (the index scratch file, each account's PATH probe) is written
+under umask 077. The copy does **not** look for rules in `../rules` next to it:
+that is `/private/tmp/rules`, which any local user can create, and a planted
+rules file there would drive every account's clean. `script_dir_for` returns no
+folder for a script inside `$SCAN_DIR`, and each account's run is handed the
+staged rules with `--patterns`. For the same reason `resolve_patterns` refuses a
+file name in `index.json` that holds a `/` or starts with `.`: root does that
+copy, and `../x` would write outside the staging folder.
+
+**One rule set for every account.** Root resolves the rules once, the usual way
+(`--patterns`, the folder next to the script, `~/.cleandevmac/rules` of root's
+`$HOME`, then the network), and every account's run gets that same set through
+`--patterns`. An account's own `~/.cleandevmac/rules` is therefore not used
+under sudo.
+
+**The clean environment.** Each run is
+`as_account <uid> <name> /usr/bin/env -i <ENV> /bin/bash <copy> <ARGS>`, from a
+subshell that first `cd`s to the account's home (root's cwd is often a folder
+the account cannot enter). ENV is exactly `HOME`, `USER`, `LOGNAME`, `SHELL`
+and `PATH` for that account, `TERM`, the `LANG`/`LC_*` variables that are set,
+`NO_COLOR` if set, and `CDM_ACCOUNT`, `CDM_ACCOUNT_POS` (`i/n`) and
+`CDM_SUDO_BY`. Nothing else crosses over: no `TMPDIR` (the run picks the
+account's own with `getconf DARWIN_USER_TEMP_DIR`), no other `CDM_*`. ARGS are
+the flags the user typed (`-n`, `-y`, `-p`, `--no-color`) and `--patterns`.
+`CDM_ACCOUNT` puts the account in the menu title; `CDM_SUDO_BY` adds
+`Run with sudo by <who>` to the log receipt.
+
+**Stdin is the terminal.** Each run's stdin is root's fd 3: the terminal, or
+`/dev/null` when there is none. sudo 1.9 runs the command in a pty of its own,
+and when sudo's stdin is not a terminal and sudo does not lead its process
+group (it was started from a script), sudo takes itself for a background job
+and starts the command in the background of that pty. The command's first
+`stty` is then stopped by SIGTTOU. sudo hands it the pty and continues it, and
+on macOS that `stty` returns EINTR with nothing set. With stdin from
+`/dev/null` that `stty` was `mute_keys`'s: the mute never took, and
+`unmute_keys`'s `cat` before the menu met a terminal still in line mode and
+waited for a whole line, so the first account's run hung after its "Max
+reclaimable" line. With the terminal on stdin, sudo runs the command in the
+foreground of its pty, as it does when typed at a prompt. The PATH probe keeps
+`/dev/null`: it must not read keys. `mute_keys` and `unmute_keys` guard against
+the same failure on their own (see #typeahead).
+
+**The PATH probe.** cdm's PATH decides whether `docker`, `rustup` and every
+`keptByCommand` command exist for that account, so `account_path` asks the
+account's own login shell (only `zsh`, `bash`, `sh`, `ksh`, `dash`): it runs
+`ACCOUNT_PROBE` — `"$shell" -l -c 'printf "\nCDM_PATH=%s\n" "$PATH"'` — as the
+account, with a clean environment, stdin from `/dev/null` and fd 3 closed, and
+takes the last `CDM_PATH=` line, so a dotfile's banner cannot pass for it. The
+5 s limit lives inside `ACCOUNT_PROBE`, which kills the login shell itself:
+sudo gives the probe a pty of its own and relays this terminal's keys to it, so
+`bounded` — which can only kill sudo's parent — would leave sudo running and
+feeding a hung shell the keys typed at the next prompt. `bounded` (10 s) stays
+as the backstop; `tests/test_account_probe.sh` pins the limit with a fake shell
+that hangs. The output goes to a file, never through `$(…)`: a hung dotfile's
+orphaned child would hold that pipe open. The login PATH's entries come first, then the
+usual places (`~/.local/bin`, `~/.cargo/bin`, `~/.docker/bin`, `~/bin`,
+Homebrew, `/usr/local/bin` and the system folders); relative entries and
+repeats are dropped. Its limit: a PATH set only in `.zshrc` (an interactive
+shell's file) is not seen. A command missed that way can only make cdm offer
+an extra orphan row, and orphan rows are never pre-selected and only go to the
+Trash.
+
+**`launchctl asuser`.** Plain `sudo -u` keeps the caller's launchd bootstrap
+(the invoking user's login session), so per-user services may answer for the
+wrong account: LaunchServices (`lsregister -dump`, which feeds the installed-app
+list that decides what counts as orphaned) and Spotlight (`mdfind`).
+`launchctl asuser <uid>` (root only) runs the command in that account's own
+bootstrap first, then `sudo -u` switches the user; that pairing is the usual way
+admin tooling runs a command as a logged-in user. An account with no session
+makes `launchctl asuser <uid> /usr/bin/true` fail, and plain `sudo -u` is used.
+`as_account` holds this choice and nothing else does, so it can change in one
+place. Either way a wrong installed-app list can only add orphan rows, which are
+never pre-selected and only go to the Trash (`register_orphans`: method
+`trash`, default 0).
+
+**Between accounts, and stopping.** With more than one account and a terminal,
+root asks before each one (`account_ask`): Enter scans, `s` skips, `q` or Esc
+stops; any other key asks again, so one stray key does not end the run. Root's
+branch in the main flow comes before `sweep_stale_scan_dirs` and before
+`mute_keys`, so root never sweeps `/private/tmp` and its terminal is never left
+muted for that prompt. sudo 1.9 gives every command its own pty, so Ctrl-C
+reaches only the account's run, and root sees it only as that run's exit
+status: 129, 130 or 143 stops the loop and ends root with that status. Any
+other status (1 is normal: nothing selected, a dry run) moves on to the next
+account.
+
+**What root writes and deletes.** Only its own `/private/tmp/cdm.XXXXXX`: the
+copy, the staged rules, scratch files, all removed by `cleanup_on_exit` on the
+way out. Root makes no `~/.cleandevmac` (under sudo `$HOME` is usually still
+the invoker's), and runs no cleanup of its own.
+
+`--user NAME` (repeatable) limits the run to those accounts, in the dispatcher's
+order. Without sudo a name other than your own is an error that prints the sudo
+command; your own name changes nothing.
+
+`tests/test_accounts.sh` shadows `dscl`, `id`, `launchctl` and `sudo` with shell
+functions and asserts the argv root would run; no test needs root.
+
 <a id="frame-literals"></a>
 ## The frame is built from literals, not escape text
 
@@ -538,6 +685,10 @@ entry naming an app that does not exist simply never matches. So a bad `procs`
 entry costs a *missing* warning, never a false one — the failure is always
 toward silence, never toward nagging.
 
+The probe is `pgrep -xq -U "$UID"`: this account's own processes only. With
+several accounts logged in at once, another account's Chrome does not rewrite
+this account's caches and must not trigger "quit Chrome first".
+
 <a id="android-images"></a>
 ## Unused Android system images
 
@@ -786,6 +937,14 @@ and for those only when the user ticks the row.
 
 ---------------------------------------------------------------------------
 Project-junk scanning (node_modules, dist, build, target, git-ignored, ...)
+
+Interactive runs always scan code repos; there is no prompt for it. Under `-y`
+repos are scanned only with `-p`, and then only for the report: `-y` never
+cleans a project row (flush_project_category gives each one default 0, and
+`-y` cleans only pre-selected rows), so scanning $HOME there would cost time
+and free nothing. The old "Also scan your code repos? [Y/n]" prompt after the
+cache scan was a second keypress for the same answer nearly every time, and a
+stray key typed during the scan answered it (see #typeahead).
 
 Junk is grouped BY PROJECT — one category per git repository, except under a
 configured group root, where every repo beneath it collapses into a single
@@ -1405,6 +1564,72 @@ therefore not a key here at all, and takes the default like anything else.
 The prompt reads fd 3 like every other keypress in the tool
 ([why](#fd-3)), and absorbs a SIGWINCH-interrupted read the way the confirm and
 wait_any_key do, so a resize is never mistaken for an answer.
+
+<a id="typeahead"></a>
+## Keys typed while cdm is busy
+
+mute_keys / unmute_keys / drain_keys — keys typed while cdm is busy are not
+echoed and never answer the next prompt.
+
+**The bug.** The terminal queues every keypress, and the scan takes seconds. The
+menu's first `read` then took whatever was waiting: an Enter pressed mid-scan
+opened the details view the moment the menu appeared, and keys typed while a
+clean was deleting answered "What next?". They were also echoed over the
+spinner.
+
+**The fix.** From the start of the busy phase (after `sweep_stale_scan_dirs`,
+before rule resolution) to the menu, through `run_cleanup`'s deletions, and
+through the rescan after a clean, `mute_keys` saves `stty -g` and sets
+`-echo -icanon min 0 time 0` on fd 3. Typed keys stay off the screen and wait in
+the queue. `unmute_keys` then reads that queue with `cat` and restores the saved
+state. `drain_keys` is the two back to back, called right before
+`Proceed? (y/N)` so a confirm that deletes things only takes a key typed after
+it is shown.
+
+- **Why `cat` under MIN 0 TIME 0.** It is the one portable "read what is there
+  and stop" on a tty: with both at 0 a read returns at once with whatever is
+  queued, or 0 bytes, and `cat` stops at the 0. bash 3.2 has no way to ask: its
+  `read -t` takes whole seconds only (no `-t 0` poll), and `read -n` sets VMIN=1
+  for itself, so a read loop blocks on an empty queue. Switching off ICANON also
+  makes a partial line typed before the mute (no Enter yet) readable, so it is
+  dropped too.
+- **Only interactive runs on a terminal.** `NON_INTERACTIVE` must be 0 and fd 3
+  a tty. A `-y` run has no prompt to protect, and `cdm -y &` calling `stty` on
+  its controlling terminal from the background would be stopped by SIGTTOU.
+  With no terminal fd 3 is /dev/null and there is nothing to mute.
+- **The menu loop does not drain before every read.** Holding ↓ sends a stream
+  of repeats that must all land; dropping the queue each time would make key
+  repeat stutter. It drains once, on entry after a busy phase.
+- **Always given back.** `cleanup_on_exit` calls `unmute_keys`, so a normal
+  exit, Ctrl-C, TERM and HUP during a busy phase all restore echo and line
+  mode, and the keys typed mid-scan are dropped rather than spilling into the
+  user's shell. Ctrl-C still works while muted: ISIG stays on.
+- **The drain never meets line mode.** `cat` returns on its own only under
+  MIN 0 TIME 0; in line mode it waits for a whole line, and the run hangs
+  before the menu. That happened under sudo twice over (see #sudo-accounts).
+  So `mute_keys` sets `KEYS_SAVED` only once its `stty` succeeded, and tries
+  that `stty` twice: a run started in the background of its terminal is stopped
+  by the first, which on macOS then fails with EINTR, and the second runs in
+  the foreground. A mute that did not take saves nothing, and `unmute_keys`
+  then does nothing. And `unmute_keys` sets `-icanon min 0 time 0` again right
+  before its `cat`, skipping the `cat` if that fails: sudo copies its own
+  terminal's modes onto the run's pty whenever it is continued after a stop
+  (Ctrl-Z, then `fg`, while a run under sudo is busy).
+- **PENDIN.** Switching ICANON back on makes the macOS kernel set PENDIN
+  ("retype pending input on the next read") in the local flags itself. It is
+  the kernel's, cleared at the next read, and with the queue drained there is
+  nothing to retype; `tests/test_typeahead.sh` masks it when comparing
+  `stty -g`. bash's own `read -s -n 1` sets it the same way.
+
+`tests/test_typeahead.sh` drives the three functions in a real pty
+(`script -q /dev/null`). The call sites in the main flow (the mute before rule
+resolution, the unmute before the menu, the rescan pair) are top-level code
+below the `CDM_LIB` hook, which no test reaches; they were checked by hand in a
+pty with an Enter typed mid-scan. The sudo hang was reproduced, and its fix
+checked, by running cdm under a small pty monitor that starts it in the
+background and brings it forward on SIGTTOU, as sudo does; that monitor is not
+part of the suite, which fakes the failing `stty` with a shell function
+instead.
 
 <a id="donate-link"></a>
 ## The donate link is opened, not fetched

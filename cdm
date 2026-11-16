@@ -7,6 +7,32 @@
 
 set -u
 
+# Root with no file to run from (`curl … | sudo bash`, or `sudo bash -c "$(curl …)"`): save
+# this script to a root-owned copy and run that instead — each account's run needs a file.
+# see docs/DESIGN.md#sudo-accounts
+if [ "${EUID:-}" = 0 ] && [ -z "${BASH_SOURCE[0]:-}" ]; then
+    _cdm_d=$(mktemp -d /private/tmp/cdm.XXXXXX) || exit 1
+    if [ -n "${BASH_EXECUTION_STRING:-}" ]; then
+        printf '%s\n' "$BASH_EXECUTION_STRING" > "$_cdm_d/cdm"
+    elif [ ! -t 0 ]; then
+        { printf '#!/bin/bash\nset -u\n'; cat; } > "$_cdm_d/cdm"
+    else
+        false
+    fi || { rm -rf "$_cdm_d"; echo "cdm: cannot read its own source; save it to a file and run: sudo bash cdm" >&2; exit 1; }
+    # Not exec: the copy's folder goes with it even when the copy exits before
+    # its own cleanup trap is set (--help, a bad option).
+    /bin/bash "$_cdm_d/cdm" "$@" < /dev/null
+    _cdm_rc=$?
+    rm -rf "$_cdm_d"
+    exit "$_cdm_rc"
+fi
+# Root runs system tools only, and stages where every account can read: root's own
+# $TMPDIR is mode 700. see docs/DESIGN.md#sudo-accounts
+if [ "$EUID" -eq 0 ]; then
+    PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH
+    TMPDIR=/private/tmp
+fi
+
 # ---- Colors (only when writing to a terminal) ------------------------------
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'
@@ -36,6 +62,10 @@ ASSUME_YES=0
 NON_INTERACTIVE=0
 PROJECTS_ENABLED=0                          # --projects: also scan code repos
 PATTERNS_SRC="${CDM_PATTERNS:-}"            # override: a local dir or a base URL
+# What was typed, so root can pass it on to each account's run.
+PROJECTS_FLAG=0                             # -p was given
+NO_COLOR_FLAG=0                             # --no-color was given
+ONLY_USERS=""                               # --user NAME, one per line
 
 usage() {
     cat <<EOF
@@ -48,22 +78,25 @@ ${YELLOW}Usage:${NC}
   curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash
   ${DIM}# standalone, dry-run:${NC}
   curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash -s -- -n
+  ${DIM}# every account on this Mac, one after another (asks for your password):${NC}
+  curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | sudo bash
 
 ${YELLOW}Options:${NC}
   -n, --dry-run        scan and show what could be freed, delete nothing
   -y, --yes            non-interactive: clean the pre-selected safe caches, then exit
                        (does NOT touch project folders, orphaned data, or the Trash)
-  -p, --projects       scan your code repos and list junk grouped PER PROJECT,
-                       so you can pick which repos to clean (node_modules, dist,
-                       build, target, __pycache__, git-ignored, ...). Off by
-                       default because scanning \$HOME is slow — interactive runs
-                       offer it right after the cache scan, so the flag is only
-                       needed for non-interactive/scripted use.
+  -p, --projects       with --yes, also scan your code repos and list their junk
+                       (node_modules, dist, build, target, __pycache__,
+                       git-ignored, ...) in the report; --yes never cleans them.
+                       Interactive runs always scan code repos and group the
+                       junk PER PROJECT, so you can pick which repos to clean.
       --patterns SRC   load rule JSON from a local directory or a base URL
                        (default: the rules/ folder next to this script,
                         else ~/.cleandevmac/rules,
                         else ${REMOTE_BASE})
       --no-color       disable colored output
+  -u, --user NAME      with sudo: only this account; repeat for more. Without it,
+                       sudo runs cdm for every account on this Mac, one at a time.
   -h, --help           show this help
 
 ${YELLOW}What it cleans (all described by editable JSON pattern files):${NC}
@@ -85,6 +118,8 @@ ${YELLOW}Safety:${NC}
     moved to the Trash, never hard-deleted, so you can undo.
   • Nothing runs until you review an itemized plan and confirm.
   • App sandboxes and Apple/system-owned data are never touched.
+  • Under sudo each account is scanned and cleaned by its own user, never by
+    root, with the same review and confirm.
 
 ${YELLOW}Free & MIT.${NC} If cdm gave you your disk back, you can buy me a coffee:
   ${CYAN}${DONATE_URL}${NC}
@@ -95,15 +130,27 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -n|--dry-run) DRY_RUN=1 ;;
         -y|--yes)     ASSUME_YES=1; NON_INTERACTIVE=1 ;;
-        -p|--projects) PROJECTS_ENABLED=1 ;;
+        -p|--projects) PROJECTS_ENABLED=1; PROJECTS_FLAG=1 ;;
         --patterns)   shift; PATTERNS_SRC="${1:-}" ;;
         --patterns=*) PATTERNS_SRC="${1#*=}" ;;
-        --no-color)   RED=; GREEN=; YELLOW=; BLUE=; PURPLE=; CYAN=; BOLD=; DIM=; REV=; NC=; ;;
+        --no-color)   NO_COLOR_FLAG=1; RED=; GREEN=; YELLOW=; BLUE=; PURPLE=; CYAN=; BOLD=; DIM=; REV=; NC=; ;;
+        -u|--user|--user=*)
+            case "$1" in --user=*) _cdm_u="${1#*=}" ;; *) shift; _cdm_u="${1:-}" ;; esac
+            [ -n "$_cdm_u" ] || { echo "${RED}--user needs an account name${NC}" >&2; exit 1; }
+            # Without sudo cdm can only clean the account it runs as.
+            if [ "$EUID" -ne 0 ] && [ "$_cdm_u" != "$(id -un)" ]; then
+                echo "${RED}Cleaning another account needs sudo:${NC}" >&2
+                echo "  curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | sudo bash -s -- --user $_cdm_u" >&2
+                exit 1
+            fi
+            ONLY_USERS="${ONLY_USERS}${_cdm_u}${NL}" ;;
         -h|--help)    usage; exit 0 ;;
         *) echo "${RED}Unknown option: $1${NC}"; echo; usage; exit 1 ;;
     esac
     shift
 done
+# Interactive runs always scan code repos; under -y only with -p (it never cleans them).
+[ "$NON_INTERACTIVE" -eq 0 ] && PROJECTS_ENABLED=1
 
 # ---- Preconditions ---------------------------------------------------------
 if [ "$(uname -s)" != "Darwin" ]; then
@@ -138,7 +185,8 @@ else
 fi
 
 LOG_DIR="$HOME/.cleandevmac"
-mkdir -p "$LOG_DIR" 2>/dev/null || true
+# Root writes into no home: under sudo $HOME is usually still the invoker's.
+[ "$EUID" -eq 0 ] || mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG_FILE="$LOG_DIR/clean.log"
 # clean.log only ever grows, and a disk-cleanup tool has no business eating the
 # disk. Capped at the single point of write, in run_cleanup.
@@ -146,7 +194,21 @@ LOG_FILE="$LOG_DIR/clean.log"
 LOG_MAX_BYTES=$((1024 * 1024))
 LOG_KEEP_BYTES=$((256 * 1024))
 
-SCAN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cdm.XXXXXX")
+# A run started with no TMPDIR (each account's run under sudo) uses the account's own.
+[ -n "${TMPDIR:-}" ] || TMPDIR=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)
+# Never an inherited SCAN_DIR: cleanup_on_exit rm -rf's it. Root reuses the folder the
+# bootstrap made when it runs from there. see docs/DESIGN.md#sudo-accounts
+SCAN_DIR=""
+if [ "$EUID" -eq 0 ]; then
+    case "${BASH_SOURCE[0]:-}" in
+        /private/tmp/cdm.??????/cdm)
+            _cdm_d="${BASH_SOURCE[0]%/cdm}"
+            case "${_cdm_d#/private/tmp/}" in */*) ;; *)
+                [ -d "$_cdm_d" ] && [ ! -L "$_cdm_d" ] && [ -O "$_cdm_d" ] && SCAN_DIR="$_cdm_d" ;;
+            esac ;;
+    esac
+fi
+[ -n "$SCAN_DIR" ] || SCAN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cdm.XXXXXX")
 # enter_tui / leave_tui — move the menu on and off the alternate screen. Both are
 # idempotent. Anything printed after leave_tui survives the run; anything before
 # it dies with the alternate screen.
@@ -162,8 +224,40 @@ leave_tui() {
     [ "$TUI_ON" -eq 1 ] && { printf '\033[?1049l'; TUI_ON=0; }
     return 0
 }
+# mute_keys — busy: typed keys stay off the screen and wait, unread, in the queue.
+# unmute_keys — busy no more: throw away what was typed, then restore the terminal.
+# drain_keys — drop whatever is queued right now (before a prompt).
+# Only interactive runs on a terminal touch stty.
+# see docs/DESIGN.md#typeahead
+KEYS_SAVED=""
+mute_keys() {
+    [ "$NON_INTERACTIVE" -eq 0 ] && [ -t 3 ] || return 0
+    [ -n "$KEYS_SAVED" ] && return 0
+    local saved
+    saved=$(stty -g <&3 2>/dev/null) || return 0
+    # Twice: a job started in the background of its terminal is stopped by its first
+    # stty, which on macOS then fails with EINTR and sets nothing. Saved only once the
+    # mute took, so unmute_keys never drains a terminal still in line mode.
+    stty -echo -icanon min 0 time 0 <&3 2>/dev/null ||
+        stty -echo -icanon min 0 time 0 <&3 2>/dev/null || return 0
+    KEYS_SAVED="$saved"
+    return 0
+}
+unmute_keys() {
+    [ -n "$KEYS_SAVED" ] || return 0
+    # Set MIN 0 TIME 0 again: something may have reset the terminal meanwhile (sudo
+    # copies its own terminal's modes onto the run's pty when continued after a stop),
+    # and in line mode this cat would wait for a whole line.
+    stty -icanon min 0 time 0 <&3 2>/dev/null &&
+        cat <&3 >/dev/null 2>&1     # MIN 0 TIME 0: returns once the queue is empty
+    stty "$KEYS_SAVED" <&3 2>/dev/null
+    KEYS_SAVED=""
+    return 0
+}
+drain_keys() { mute_keys; unmute_keys; }
 cleanup_on_exit() {
     leave_tui
+    unmute_keys
     [ -n "${SCAN_DIR:-}" ] && rm -rf "$SCAN_DIR" 2>/dev/null
 }
 trap cleanup_on_exit EXIT
@@ -968,6 +1062,21 @@ fetch() {
     esac
 }
 
+# script_dir_for <script> — the folder resolve_patterns looks for rules next to: the
+# script's own, or nothing when the script is a staged copy inside $SCAN_DIR.
+# see docs/DESIGN.md#sudo-accounts
+script_dir_for() {
+    local d p s
+    case "$1" in */*) : ;; *) return 0 ;; esac
+    d=$(cd "$(dirname "$1")" 2>/dev/null && pwd) || return 0
+    p=$(cd -P "$d" 2>/dev/null && pwd -P) || return 0
+    s=$(cd -P "${SCAN_DIR:-}" 2>/dev/null && pwd -P) || s=""
+    if [ -n "${SCAN_DIR:-}" ] && [ -n "$s" ]; then
+        case "$p/" in "$s"/*) return 0 ;; esac
+    fi
+    printf '%s' "$d"
+}
+
 # resolve_patterns — decide where pattern JSON comes from and stage a local copy
 # of index.json + every listed file into $SCAN_DIR/patterns. Sets PATTERNS_DIR.
 resolve_patterns() {
@@ -981,10 +1090,8 @@ resolve_patterns() {
     if [ -n "$PATTERNS_SRC" ]; then
         base="$PATTERNS_SRC"
     else
-        local self_dir=""
-        case "${BASH_SOURCE:-}" in
-            */*) self_dir=$(cd "$(dirname "${BASH_SOURCE}")" 2>/dev/null && pwd) ;;
-        esac
+        local self_dir
+        self_dir=$(script_dir_for "${BASH_SOURCE:-}")
         if [ -n "$self_dir" ] && [ -f "$self_dir/rules/index.json" ]; then
             base="$self_dir/rules"
         elif [ -n "$self_dir" ] && [ -f "$self_dir/../rules/index.json" ]; then
@@ -1016,6 +1123,14 @@ resolve_patterns() {
     ORPHAN_CONFIG_BASENAME=""
     local typ val staged_files=0
     while IFS=$'\x1f' read -r typ val _; do
+        # A listed file is a plain name inside the staging folder, never a path out
+        # of it: under sudo, root does this copy. see docs/DESIGN.md#sudo-accounts
+        case "$typ" in FILE|ORPHAN)
+            case "$val" in ''|.*|*/*)
+                echo "${YELLOW}Warning: skipped pattern file with a path in its name: $val${NC}" >&2
+                continue ;;
+            esac ;;
+        esac
         case "$typ" in
             FILE)
                 if fetch "$base/$val" "$staged/$val"; then staged_files=$((staged_files + 1))
@@ -2606,7 +2721,16 @@ render_menu() {
 
     local buf="" tag=""
     [ "$DRY_RUN" -eq 1 ] && tag="   ${YELLOW}DRY RUN — nothing will be deleted${NC}"
-    buf+="${BLUE}🧹 ${BOLD}CleanDevMac${NC}${BLUE} — reclaim your disk${NC}${tag}${K}${NL}"
+    # Under sudo, the account this run cleans, clipped to the 17 columns
+    # "reclaim your disk" takes, so the title is never wider than before.
+    local title="reclaim your disk" pos=""
+    if [ -n "${CDM_ACCOUNT:-}" ]; then
+        [ -n "${CDM_ACCOUNT_POS:-}" ] && pos=" · $CDM_ACCOUNT_POS"
+        dwidth "$pos"
+        _clip_plain "$CDM_ACCOUNT" $((17 - _DW)); title="${_CLIP}${pos}"
+        _clip_plain "$title" 17; title="$_CLIP"
+    fi
+    buf+="${BLUE}🧹 ${BOLD}CleanDevMac${NC}${BLUE} — ${title}${NC}${tag}${K}${NL}"
     # Selected / max reclaimable / disk free, tier-fitted to this width above.
     build_status_line "$cols"
     buf+="${_SS}${K}${NL}"
@@ -2778,7 +2902,9 @@ running_selected_apps() {
             # Two selected categories can name the same app; probe it once.
             case "$seen" in *"|$name|"*) continue ;; esac
             seen="${seen}|$name|"
-            if pgrep -xq "$name" 2>/dev/null; then running="${running:+$running, }$name"; fi
+            # This account's own copy only: another account's Chrome does not
+            # rewrite this account's caches.
+            if pgrep -xq -U "$UID" "$name" 2>/dev/null; then running="${running:+$running, }$name"; fi
         done <<EOF
 ${CAT_PROCS[$i]}
 EOF
@@ -2924,6 +3050,7 @@ run_cleanup() {
     if [ "$NON_INTERACTIVE" -eq 0 ]; then
         echo
         [ "$PLAN_HAS_PERMANENT" -eq 1 ] && echo "${YELLOW}Items marked DELETE / EMPTY TRASH are removed permanently.${NC}"
+        drain_keys
         printf '%s' "Proceed? (y/N): "
         # Retry on a SIGWINCH-interrupted read so a terminal resize while the
         # prompt is up doesn't count as a (cancelling) empty answer.
@@ -2943,9 +3070,11 @@ run_cleanup() {
     local free_before=0
     disk_stats && free_before="$DISK_FREE_KB"
     rotate_log
+    mute_keys
     {
         echo "=================================================="
         echo "CleanDevMac run: $(date)"
+        [ -n "${CDM_SUDO_BY:-}" ] && echo "Run with sudo by $CDM_SUDO_BY"
         echo "=================================================="
         local i method p
         for i in $(cat_indices); do
@@ -3006,36 +3135,8 @@ EOF
     # plain scan, a dry run, or --help-less startup: asking for money before
     # delivering anything is how a good tool starts feeling like adware.
     echo "${DIM}Got your disk back? ${NC}${CYAN}${DONATE_URL}${NC}"
+    unmute_keys
     return 0
-}
-
-# offer_project_scan — interactive prompt (shown when -p was not passed) to also
-# scan code repos. Runs scan_projects in the FOREGROUND: it mutates the in-memory
-# category arrays, so it must not be a background/subshell job. Re-sizes and
-# re-prunes so the newly found projects appear in the menu.
-offer_project_scan() {
-    printf '\n'
-    printf '%b\n' "  ${CYAN}Also scan your code repos for build/dependency junk?${NC}"
-    printf '%b'   "  ${DIM}node_modules, dist, build, target, __pycache__, git-ignored — can take a moment.${NC} [Y/n] "
-    # Act on the first keypress — no Enter needed. y/Y or Enter means Yes;
-    # any other key (n, Esc, ...) means No. A failed read also means No.
-    local reply=""
-    if ! IFS= read -r -s -n 1 reply <&3 2>/dev/null; then
-        printf '\n'
-        return 0
-    fi
-    printf '\n'
-    case "$reply" in
-        y|Y|"")
-            PROJECTS_ENABLED=1
-            printf '%b' " ${CYAN}Scanning code repos (this can take a moment)...${NC}"
-            scan_projects
-            printf '\r\033[K'
-            compute_sizes
-            prune_zero
-            sort_by_size
-            ;;
-    esac
 }
 
 # open_donate — hand DONATE_URL to the browser, on an explicit keypress and
@@ -3088,14 +3189,258 @@ after_clean_menu() {
     done
 }
 
+# ---------------------------------------------------------------------------
+# Every account, under sudo
+# ---------------------------------------------------------------------------
+# Run as root, cdm deletes nothing itself: it runs one ordinary cdm per account, as
+# that account's own user, from a root-owned copy in its own $SCAN_DIR.
+# see docs/DESIGN.md#sudo-accounts
+US=$'\x1f'
+
+# account_rows — the accounts root runs cdm for, one "name US uid US home US shell"
+# per line: the invoking user ($SUDO_USER) first, the rest by name in C order.
+account_rows() {
+    local name uid line rest home shell first="" others=""
+    while read -r name uid _; do
+        case "$uid" in ''|*[!0-9]*) continue ;; esac
+        [ "$uid" -ge 501 ] || continue
+        # Passed to sudo -u: a plain ASCII name that starts with a letter.
+        is_ascii "$name" || continue
+        case "$name" in [[:alpha:]]*) : ;; *) continue ;; esac
+        case "$name" in *[![:alnum:]_.-]*) continue ;; esac
+        # name:pw:uid:gid:class:change:expire:gecos:home:shell — gecos may hold spaces.
+        line=$(id -P "$name" 2>/dev/null) || continue
+        case "$line" in *"$US"*|*"$NL"*) continue ;; esac
+        shell="${line##*:}"; rest="${line%:*}"; home="${rest##*:}"
+        case "$home" in /*) : ;; *) continue ;; esac
+        [ "$home" != "/" ] && [ -d "$home" ] || continue
+        case "$shell" in */false|*/nologin) continue ;; esac
+        line="$name$US$uid$US$home$US$shell"
+        if [ "$name" = "${SUDO_USER:-}" ]; then first="$line"; else others="$others$line$NL"; fi
+    done <<ROWS
+$(dscl . -list /Users UniqueID 2>/dev/null)
+ROWS
+    [ -n "$first" ] && printf '%s\n' "$first"
+    [ -n "$others" ] && printf '%s' "$others" | LC_ALL=C sort
+    return 0
+}
+
+# pick_accounts <rows> — the rows ONLY_USERS names, in the rows' order. Fails, naming
+# the accounts there are, when a requested name is not one of them.
+pick_accounts() {
+    local rows="$1" want line out="" all=""
+    while IFS= read -r want; do
+        [ -n "$want" ] || continue
+        case "$NL$rows" in *"$NL$want$US"*) continue ;; esac
+        while IFS= read -r line; do
+            [ -n "$line" ] && all="${all:+$all, }${line%%$US*}"
+        done <<ROWS
+$rows
+ROWS
+        echo "${RED}No account named $want on this Mac.${NC} Accounts: $all" >&2
+        return 1
+    done <<WANT
+$ONLY_USERS
+WANT
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        case "$NL$ONLY_USERS" in *"$NL${line%%$US*}$NL"*) out="$out$line$NL" ;; esac
+    done <<ROWS
+$rows
+ROWS
+    printf '%s' "$out"
+}
+
+# as_account <uid> <name> [cmd...] — run a command as that account, in that account's
+# own launchd session when it has one. With no command it only makes (and remembers)
+# that choice, so call it once in the parent before any subshell does.
+# see docs/DESIGN.md#sudo-accounts
+AS_UID=""; AS_ASUSER=0
+as_account() {
+    local uid="$1" name="$2"; shift 2
+    if [ "$AS_UID" != "$uid" ]; then
+        AS_UID="$uid"; AS_ASUSER=0
+        launchctl asuser "$uid" /usr/bin/true </dev/null >/dev/null 2>&1 && AS_ASUSER=1
+    fi
+    [ $# -gt 0 ] || return 0
+    if [ "$AS_ASUSER" -eq 1 ]; then
+        launchctl asuser "$uid" sudo -u "$name" -- "$@"
+    else
+        sudo -u "$name" -- "$@"
+    fi
+}
+
+# ACCOUNT_PROBE — run as the account by account_path, with the login shell as $0: print
+# the PATH it sets, and kill it at 5 s. The limit has to live in here: sudo gives the
+# probe a pty of its own and relays this terminal's keys to it, so killing only sudo's
+# parent would leave sudo running, feeding a hung shell the keys typed at the next prompt.
+# see docs/DESIGN.md#sudo-accounts
+ACCOUNT_PROBE='"$0" -l -c '\''printf "\nCDM_PATH=%s\n" "$PATH"'\'' & p=$!
+( sleep 5; kill -9 "$p" ) >/dev/null 2>&1 & w=$!
+wait "$p"; kill "$w" 2>/dev/null; exit 0'
+
+# account_path <uid> <name> <home> <shell> — the PATH that account's run gets: what
+# its login shell sets, then the usual places, absolute entries only, no repeats.
+# see docs/DESIGN.md#sudo-accounts
+account_path() {
+    local uid="$1" name="$2" home="$3" shell="$4" login="" f="$SCAN_DIR/path.$1" out="" e
+    local -a parts=()
+    case "${shell##*/}" in
+        zsh|bash|sh|ksh|dash)
+            # Into a file, never $(…): a hung dotfile's child would hold a pipe open.
+            # The 5 s limit is ACCOUNT_PROBE's own, inside the sudo; bounded is the
+            # backstop. fd 3 (the terminal) is not the probe's to read.
+            ( umask 077
+              bounded 10 as_account "$uid" "$name" /usr/bin/env -i "HOME=$home" "USER=$name" \
+                  "LOGNAME=$name" "SHELL=$shell" PATH=/usr/bin:/bin:/usr/sbin:/sbin TERM=dumb \
+                  /bin/bash -c "$ACCOUNT_PROBE" "$shell" < /dev/null > "$f" 2>/dev/null 3<&- )
+            login=$(sed -n 's/^CDM_PATH=//p' "$f" 2>/dev/null | tail -n 1)
+            rm -f "$f" ;;
+    esac
+    IFS=: read -r -a parts <<P
+$login
+P
+    for e in ${parts[@]+"${parts[@]}"} "$home/.local/bin" "$home/.cargo/bin" "$home/.docker/bin" \
+             "$home/bin" /opt/homebrew/bin /opt/homebrew/sbin /usr/local/bin /usr/bin /bin /usr/sbin /sbin; do
+        case "$e" in /*) : ;; *) continue ;; esac
+        case ":$out:" in *":$e:"*) continue ;; esac
+        out="${out:+$out:}$e"
+    done
+    printf '%s' "$out"
+}
+
+# account_ask <name> <i> <n> — between accounts: 0 run, 1 skip, 2 stop.
+account_ask() {
+    local key next
+    drain_keys
+    while true; do
+        printf '%s' " ${CYAN}▸${NC} ${BOLD}$1${NC} ($2/$3) — ${DIM}Enter: scan · s: skip · q: stop${NC} "
+        key=""
+        # Retry on a SIGWINCH-interrupted read; a real failure is EOF: stop.
+        while ! IFS= read -r -s -n 1 key <&3 2>/dev/null; do
+            [ "${NEED_REDRAW:-0}" = 1 ] || { printf '\n'; return 2; }
+            NEED_REDRAW=0
+        done
+        printf '\n'
+        case "$key" in
+            ''|y|Y) return 0 ;;
+            s|S|n|N) return 1 ;;
+            q|Q) return 2 ;;
+            # Esc alone stops; an arrow key's sequence is a stray key: ask again.
+            "$ESC") next=""; read -r -s -n 2 -t 1 next <&3 2>/dev/null
+                    [ -z "$next" ] && return 2 ;;
+        esac
+    done
+}
+
+# run_accounts — root's whole run: stage a copy and the rules every account can read,
+# then one cdm run per account, as that account. Returns root's exit status.
+# see docs/DESIGN.md#sudo-accounts
+run_accounts() {
+    local old_umask self="${BASH_SOURCE[0]:-}" f
+    old_umask=$(umask)
+    umask 077
+    if ! resolve_patterns; then umask "$old_umask"; return 1; fi
+    if [ "$self" != "$SCAN_DIR/cdm" ]; then
+        cat "$self" > "$SCAN_DIR/cdm" 2>/dev/null || {
+            umask "$old_umask"; echo "${RED}Error: could not copy cdm for the accounts' runs.${NC}" >&2; return 1; }
+    fi
+    umask "$old_umask"
+    chmod 711 "$SCAN_DIR" && chmod 755 "$SCAN_DIR/patterns" && chmod 644 "$SCAN_DIR/cdm" || return 1
+    for f in "$SCAN_DIR/patterns"/*; do [ -f "$f" ] && chmod 644 "$f"; done
+
+    local rows
+    rows=$(account_rows)
+    if [ -n "$ONLY_USERS" ]; then rows=$(pick_accounts "$rows") || return 1; fi
+    if [ -z "$rows" ]; then
+        echo "${RED}Error: no user account to clean on this Mac.${NC}" >&2
+        return 1
+    fi
+    local -a a_name=() a_uid=() a_home=() a_shell=()
+    local n=0 name uid home shell
+    while IFS="$US" read -r name uid home shell; do
+        [ -n "$name" ] || continue
+        a_name[$n]="$name"; a_uid[$n]="$uid"; a_home[$n]="$home"; a_shell[$n]="$shell"
+        n=$((n + 1))
+    done <<ROWS
+$rows
+ROWS
+    local i=0 list=""
+    while [ "$i" -lt "$n" ]; do
+        list="${list:+$list, }${a_name[$i]}"
+        [ "${a_name[$i]}" = "${SUDO_USER:-}" ] && list="$list (you)"
+        i=$((i + 1))
+    done
+    echo " ${BLUE}👥 Accounts:${NC} $list"
+    local free_before=""
+    disk_stats && free_before="$DISK_FREE_KB"
+
+    local ran=0 rc path v
+    local -a envs args
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        name="${a_name[$i]}"; uid="${a_uid[$i]}"; home="${a_home[$i]}"; shell="${a_shell[$i]}"
+        i=$((i + 1))
+        if [ "$NON_INTERACTIVE" -eq 0 ] && [ -t 3 ] && [ "$n" -gt 1 ]; then
+            account_ask "$name" "$i" "$n"; rc=$?
+            [ "$rc" -eq 1 ] && continue
+            [ "$rc" -eq 2 ] && break
+        fi
+        echo
+        echo "${DIM}━━${NC} ${BOLD}${name}${NC} ${DIM}· $i of $n ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        as_account "$uid" "$name"
+        path=$(account_path "$uid" "$name" "$home" "$shell")
+        # Exactly this crosses over, nothing inherited: no TMPDIR, no other CDM_*.
+        envs=("HOME=$home" "USER=$name" "LOGNAME=$name" "SHELL=$shell" "PATH=$path")
+        for v in TERM LANG LC_ALL LC_CTYPE LC_COLLATE LC_MESSAGES LC_MONETARY LC_NUMERIC LC_TIME NO_COLOR; do
+            eval "[ -n \"\${$v+x}\" ] && envs+=(\"$v=\${$v}\")"
+        done
+        envs+=("CDM_ACCOUNT=$name" "CDM_ACCOUNT_POS=$i/$n" "CDM_SUDO_BY=${SUDO_USER:-root}")
+        args=()
+        [ "$DRY_RUN" -eq 1 ] && args+=(-n)
+        [ "$ASSUME_YES" -eq 1 ] && args+=(-y)
+        [ "$PROJECTS_FLAG" -eq 1 ] && args+=(-p)
+        [ "$NO_COLOR_FLAG" -eq 1 ] && args+=(--no-color)
+        args+=(--patterns "$SCAN_DIR/patterns")
+        # From the account's home: root's cwd is often a folder the account cannot enter.
+        # Stdin is fd 3, the terminal (or /dev/null without one): sudo runs a command
+        # whose stdin is not a terminal as a background job of its pty, where the run's
+        # first stty is stopped and then fails. see docs/DESIGN.md#sudo-accounts
+        ( cd "$home" 2>/dev/null || cd /
+          as_account "$uid" "$name" /usr/bin/env -i "${envs[@]}" /bin/bash "$SCAN_DIR/cdm" "${args[@]}" <&3 )
+        rc=$?
+        ran=$((ran + 1))
+        # Interrupted (Ctrl-C, a closed window, TERM): stop here, not on the next account.
+        case "$rc" in 129|130|143) return "$rc" ;; esac
+    done
+
+    echo
+    local gain=""
+    if [ -n "$free_before" ] && disk_stats; then
+        [ "$DISK_FREE_KB" -gt "$free_before" ] && gain=" ${GREEN}(+$(human_kb $((DISK_FREE_KB - free_before))) free)${NC}"
+        echo " ${GREEN}✔ Done:${NC} $ran account(s). ${BLUE}Disk:${NC} $(disk_line)$gain"
+    else
+        echo " ${GREEN}✔ Done:${NC} $ran account(s)."
+    fi
+    return 0
+}
+
 # Test hook: load functions only when sourced with CDM_LIB=1.
 if [ "${CDM_LIB:-}" = "1" ]; then
     return 0 2>/dev/null || exit 0
 fi
 
+# Root cleans nobody's files itself: one ordinary run per account, as that account.
+# see docs/DESIGN.md#sudo-accounts
+if [ "$EUID" -eq 0 ]; then run_accounts; exit $?; fi
+
 # Deliberately below the CDM_LIB hook: sourcing this script for a test must not
 # reach into the real $TMPDIR and start deleting things.
 sweep_stale_scan_dirs
+
+# Busy from here to the menu: typed keys are muted, then dropped.
+# see docs/DESIGN.md#typeahead
+mute_keys
 
 # ---- Resolve & stage pattern files -----------------------------------------
 if ! resolve_patterns; then
@@ -3146,19 +3491,12 @@ if [ "$N" -gt 0 ]; then
     sort_by_size
 fi
 
-# Fast by default: project scanning is off unless -p was given, so offer it here
-# (interactive runs only). Accepting scans code repos and folds the results in.
-if [ "$NON_INTERACTIVE" -eq 0 ] && [ "$PROJECTS_ENABLED" -eq 0 ]; then
-    offer_project_scan
-fi
-
 if [ "$N" -eq 0 ]; then
     echo "${GREEN}Nothing to reclaim — everything is already clean.${NC}"
     exit 0
 fi
 
-# The scan's headline: everything found, before any selection. Printed after the
-# project-scan offer, so accepting it is counted here rather than reported stale.
+# The scan's headline: everything found, before any selection.
 echo " ${GREEN}♻️  Max reclaimable:${NC} ${BOLD}${GREEN}$(human_kb "$(total_kb)")${NC} ${DIM}across ${N} categories${NC}"
 
 # ---- Non-interactive -------------------------------------------------------
@@ -3169,6 +3507,8 @@ if [ "$ASSUME_YES" -eq 1 ]; then
 fi
 
 # ---- Interactive menu ------------------------------------------------------
+# The menu's first key must be one typed after it is shown.
+unmute_keys
 # Redraw on terminal resize. SIGWINCH sets NEED_REDRAW and the read below polls
 # with a 1s timeout: bash 3.2's read does not return early when a signal fires.
 # see docs/DESIGN.md#resize-redraw
@@ -3234,9 +3574,11 @@ while true; do
                 printf '%s' " ${CYAN}Rescanning...${NC} "
                 # The clean moved the free space, and with it the restart note.
                 [ "$DISK_TOTAL_KB" -gt 0 ] && refresh_restart_note
+                mute_keys
                 build_categories; printf '\r\033[K'
                 [ "$N" -eq 0 ] && { echo "${GREEN}All clean!${NC}"; exit 0; }
                 compute_sizes; prune_zero; sort_by_size
+                unmute_keys
                 [ "$N" -eq 0 ] && { echo "${GREEN}All clean!${NC}"; exit 0; }
                 CURSOR=0; SCROLL=0
             else

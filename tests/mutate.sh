@@ -656,7 +656,7 @@ check_mutation 'unselected categories are probed too' test_running_apps.sh \
     '/^running_selected_apps()/,/^}/ s@\[ "${CAT_SEL\[$i\]}" = "1" \] || continue@[ "${CAT_SEL[$i]}" != "ZZ" ] || continue@'
 
 check_mutation 'pgrep loses -x (Google Chrome Helper would match)' test_running_apps.sh \
-    's|pgrep -xq "\$name"|pgrep -q "$name"|'
+    's|pgrep -xq -U "\$UID" "\$name"|pgrep -q -U "$UID" "$name"|'
 
 # ---- android-images: never offer an image an AVD still boots from ----------
 
@@ -1114,6 +1114,111 @@ check_mutation 'the clean never routes clones' test_code_sign_clones.sh \
 
 check_mutation 'details du each copy' test_code_sign_clones.sh \
     's@    elif \[ "\${CAT_METHOD\[\$i\]}" = "clones" \]; then@    elif false; then@'
+
+# ---- keys typed while busy: mute_keys / unmute_keys / drain_keys ------------
+# The call sites in the main flow are top-level code no test reaches; these pin
+# the functions themselves. see docs/DESIGN.md#typeahead
+
+check_mutation 'unmute keeps what was typed while busy' test_typeahead.sh \
+    's@        cat <&3 >/dev/null 2>&1     # MIN 0 TIME 0: returns once the queue is empty@        :@'
+
+check_mutation 'muted keys are still echoed' test_typeahead.sh \
+    's@    stty -echo -icanon min 0 time 0 <&3 2>/dev/null@    stty -icanon min 0 time 0 <\&3 2>/dev/null@'
+
+check_mutation 'mute_keys tries its stty once' test_typeahead.sh \
+    's@^        stty -echo -icanon min 0 time 0 <&3 2>/dev/null || return 0$@        false || return 0@'
+
+check_mutation 'mute_keys saves the state when the mute did not take' test_typeahead.sh \
+    's@^    saved=\$(stty -g <&3 2>/dev/null) || return 0$@    saved=$(stty -g <\&3 2>/dev/null) || return 0; KEYS_SAVED="$saved"@'
+
+check_mutation 'unmute_keys drains without MIN 0 TIME 0 set again' test_typeahead.sh \
+    's@^    stty -icanon min 0 time 0 <&3 2>/dev/null &&$@    true \&\&@'
+
+check_mutation '-y runs touch the terminal' test_typeahead.sh \
+    's@    \[ "\$NON_INTERACTIVE" -eq 0 \] && \[ -t 3 \] || return 0@    [ -t 3 ] || return 0@'
+
+check_mutation 'unmute_keys does not restore the terminal' test_typeahead.sh \
+    's@    stty "\$KEYS_SAVED" <&3 2>/dev/null@    :@'
+
+check_mutation 'cleanup_on_exit leaves the keys muted' test_typeahead.sh \
+    '/^cleanup_on_exit() {/,/^}/s@^    unmute_keys$@    :@'
+
+check_mutation 'drain_keys drops nothing' test_typeahead.sh \
+    's@^drain_keys() { mute_keys; unmute_keys; }@drain_keys() { :; }@'
+
+# ---- options ----------------------------------------------------------------
+
+check_mutation 'interactive runs skip code repos' test_options.sh \
+    's@^\[ "\$NON_INTERACTIVE" -eq 0 \] && PROJECTS_ENABLED=1$@:@'
+
+check_mutation '-y scans code repos without -p' test_options.sh \
+    's@^\[ "\$NON_INTERACTIVE" -eq 0 \] && PROJECTS_ENABLED=1$@PROJECTS_ENABLED=1@'
+
+# ---- under sudo: one run per account, as that account ------------------------
+# see docs/DESIGN.md#sudo-accounts
+
+check_mutation 'accounts: uid filter widened' test_accounts.sh \
+    's@        \[ "\$uid" -ge 501 \] || continue@        [ "$uid" -ge 0 ] || continue@'
+
+check_mutation 'accounts: names starting with _ allowed' test_accounts.sh \
+    's@        case "\$name" in \[\[:alpha:\]\]\*) : ;; \*) continue ;; esac@        case "$name" in [[:alpha:]_]*) : ;; *) continue ;; esac@'
+
+check_mutation 'accounts: nologin shells allowed' test_accounts.sh \
+    's@        case "\$shell" in \*/false|\*/nologin) continue ;; esac@        case "$shell" in */false) continue ;; esac@'
+
+check_mutation 'accounts: the invoker is not first' test_accounts.sh \
+    's@        if \[ "\$name" = "\${SUDO_USER:-}" \]; then first=@        if false; then first=@'
+
+check_mutation 'accounts: env -i dropped' test_accounts.sh \
+    's|as_account "\$uid" "\$name" /usr/bin/env -i "\${envs\[@\]}"|as_account "$uid" "$name" /usr/bin/env "${envs[@]}"|'
+
+check_mutation 'accounts: each run'"'"'s stdin is /dev/null, terminal or not' test_accounts.sh \
+    's|"\${args\[@\]}" <&3 )$|"${args[@]}" < /dev/null )|'
+
+check_mutation 'accounts: HOME is not the account'"'"'s' test_accounts.sh \
+    's@        envs=("HOME=\$home" @        envs=("HOME=$HOME" @'
+
+check_mutation 'accounts: --patterns not passed' test_accounts.sh \
+    's@        args+=(--patterns "\$SCAN_DIR/patterns")@        :@'
+
+check_mutation 'accounts: an interrupted run does not stop the loop' test_accounts.sh \
+    's@        case "\$rc" in 129|130|143) return "\$rc" ;; esac@        :@'
+
+check_mutation 'accounts: relative PATH entries kept' test_accounts.sh \
+    's@        case "\$e" in /\*) : ;; \*) continue ;; esac@        :@'
+
+check_mutation 'accounts: --user matches no name' test_accounts.sh \
+    's@        case "\$NL\$rows" in \*"\$NL\$want\$US"\*) continue ;; esac@        :@'
+
+check_mutation 'resolve_patterns: rules next to the staged copy' test_accounts.sh \
+    's@        case "\$p/" in "\$s"/\*) return 0 ;; esac@        :@'
+
+check_mutation 'resolve_patterns: a listed ../ name is copied' test_accounts.sh \
+    's@            case "\$val" in '"''"'|\.\*|\*/\*)@            case "$val" in ZZNOMATCH)@'
+
+check_mutation 'running apps: any account'"'"'s copy counts' test_running_apps.sh \
+    's@pgrep -xq -U "\$UID" "\$name"@pgrep -xq "$name"@'
+
+check_mutation 'bootstrap: the rest of the script is not read' test_accounts.sh \
+    's@        { printf '"'"'#!/bin/bash\\nset -u\\n'"'"'; cat; } > "\$_cdm_d/cdm"@        { printf '"'"'#!/bin/bash\\nset -u\\n'"'"'; } > "$_cdm_d/cdm"@'
+
+check_mutation '--user someone else accepted without sudo' test_accounts.sh \
+    's@            if \[ "\$EUID" -ne 0 \] && \[ "\$_cdm_u" != "\$(id -un)" \]; then@            if false; then@'
+
+check_mutation 'log receipt: who ran sudo dropped' test_accounts.sh \
+    's@        \[ -n "\${CDM_SUDO_BY:-}" \] && echo "Run with sudo by \$CDM_SUDO_BY"@        :@'
+
+check_mutation 'menu title: the account name not clipped' test_accounts.sh \
+    's@        _clip_plain "\$CDM_ACCOUNT" \$((17 - _DW)); title="\${_CLIP}\${pos}"@        title="${CDM_ACCOUNT}${pos}"@'
+
+check_mutation 'bootstrap: the copy'"'"'s folder is left behind' test_accounts.sh \
+    's@^    rm -rf "\$_cdm_d"$@    :@'
+
+check_mutation 'bootstrap: the copy'"'"'s exit status is lost' test_accounts.sh \
+    's@^    exit "\$_cdm_rc"$@    exit 0@'
+
+check_mutation 'account probe: a hung login shell is never killed' test_account_probe.sh \
+    's@( sleep 5; kill -9 "\$p" )@( sleep 5; : )@'
 
 echo
 printf 'mutations: %d, survived (holes in the tests): %d\n' "$total" "$survived"

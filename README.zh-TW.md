@@ -31,6 +31,20 @@ curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash
 curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash -s -- -n
 ```
 
+### 這台 Mac 上的所有帳號
+
+加上 `sudo`，`cdm` 會為這台 Mac 上的每個使用者帳號各執行一次，一個接一個：
+
+```bash
+curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | sudo bash
+```
+
+每個帳號都由它自己的使用者掃描與清理，從不由 root 來做，檢視與確認的流程和一般執行相同。帳號不只一個時，它會在每個帳號之前詢問：Enter 掃描，`s` 略過，`q` 停止。`-n` 等選項對每個帳號都有效，Ctrl-C 會停止整個執行。只想清理部分帳號時，用 `--user` 指定名稱（多個就重複使用）：
+
+```bash
+curl -sSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | sudo bash -s -- --user tham
+```
+
 ## 留在本機（選用）
 
 只有在你想不帶 URL 再次執行 `cdm` 時才需要這麼做。這是這裡唯一會留下檔案的做法：
@@ -56,7 +70,7 @@ cdm
 
 **4. Electron、瀏覽器與應用程式快取** — VS Code、Claude（包括每個預覽的 webview 快取，以及可選的 Cowork 虛擬機器映像檔）、Slack；Chrome、Brave、Edge、Vivaldi 與 Arc 會依瀏覽器設定檔分別掃描；Firefox；以及當機／遙測 SDK 的快取（Sentry、Crashlytics、Sparkle）。
 
-**5. 專案垃圾，依儲存庫分組** — `node_modules`、`dist`、`build`、`target`、`__pycache__`，以及被 git 忽略的檔案。只會是儲存庫自己用 git 忽略的內容。預設關閉，加上 `-p` 才會啟用。互動式執行時，會在快取掃描結束後主動詢問你。
+**5. 專案垃圾，依儲存庫分組** — `node_modules`、`dist`、`build`、`target`、`__pycache__`，以及被 git 忽略的檔案。只會是儲存庫自己用 git 忽略的內容。互動式執行一律會掃描你的程式碼儲存庫；每個專案列都預設不勾選。`-y` 會略過它們，除非同時加上 `-p`，而即使如此也從不清理它們。
 
 **6. Docker / Podman** — `system prune -af`，以及對每個 buildx builder 的快取執行 `buildx prune -af`（已停止的 builder 會為此啟動，完成後再停止），需自行選擇啟用。具名磁碟區永遠不會被刪除。
 
@@ -75,6 +89,7 @@ cdm
 - **`.env*` 檔案永遠不會被列入刪除。** 即使被 git 忽略，專案掃描也會跳過它們——裡面放的是無法重新產生的密鑰與本機設定。
 - **應用程式沙箱以及屬於 Apple 或系統的資料永遠不會被動到。** 唯一的例外是已解除安裝的 Docker Desktop 的容器（存放其虛擬機磁碟），它只出現在預設不勾選的 (optional) 列中。
 - 已安裝應用程式的清單讀取自 **LaunchServices**，因此 prefPane、外掛等非 `.app` 套件不會被誤判為殘留。放在垃圾桶裡的應用程式，或 LaunchServices 回報已不在磁碟上的應用程式，都算作已解除安裝。
+- **在 `sudo` 下，root 不刪除任何東西。** 每個帳號都由它自己的使用者掃描與清理，從不由 root 來做：root 只是把 `cdm` 及其規則的一份副本放到 `/private/tmp`，再以每個帳號的身分依序執行這份副本。所有帳號使用同一組規則，每個帳號的清理記錄在它自己的 `~/.cleandevmac/clean.log` 中（註明是誰用 `sudo` 執行的），移到垃圾桶的內容會進入該帳號自己的垃圾桶。
 - `--dry-run` 不會刪除任何東西。
 - 每一次執行都會記錄到 `~/.cleandevmac/clean.log`。
 
@@ -92,6 +107,8 @@ cdm
 | `q`（或 `Esc`） | 離開 |
 
 清理完成後會列出結果，並詢問下一步：`r` 重新掃描 · `b` 請我喝杯咖啡 · `q` 離開（預設——按 Enter 或其他任何鍵同樣是離開）。
+
+`cdm` 掃描或清理期間按下的鍵會被忽略：不會顯示出來，並在工作結束時被丟棄，所以誤按的 Enter 既不會打開某一列的詳細內容，也不會回答任何提問。
 
 項目依佔用大小由大到小排列。可安全重新產生的快取會預先勾選；Maven 儲存庫、Playwright 瀏覽器、當機記錄、已安裝的 SDK 元件、舊的 Claude Code 對話紀錄、專案資料夾與殘留的應用程式資料一開始都不勾選——按 `s` 會重設回這組預設選擇。
 
@@ -120,7 +137,8 @@ cdm
 | --- | --- |
 | `-n`, `--dry-run` | 掃描並回報；不刪除任何東西 |
 | `-y`, `--yes` | 非互動模式：清理預先勾選的安全快取後結束。絕不碰專案資料夾、殘留應用程式資料或垃圾桶 |
-| `-p`, `--projects` | 一併掃描程式碼儲存庫中的專案垃圾 |
+| `-p`, `--projects` | 搭配 `-y`：一併掃描程式碼儲存庫，並在報告中列出其中的專案垃圾（`-y` 從不清理它們）。互動式執行一律會掃描程式碼儲存庫 |
+| `-u`, `--user NAME` | 搭配 `sudo`：只處理這個帳號；多個就重複使用。不加它時，`sudo` 會為這台 Mac 上的每個帳號逐一執行 `cdm` |
 | `--patterns SRC` | 從本機目錄或基底 URL 載入規則 |
 | `--no-color` | 關閉 ANSI 色彩 |
 | `-h`, `--help` | 用法 |

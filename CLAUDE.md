@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-CleanDevMac (`cdm`) is a single ~1700-line bash script that reclaims disk space on macOS from
+CleanDevMac (`cdm`) is a single ~3600-line bash script that reclaims disk space on macOS from
 developer caches, build artifacts, per-repo project junk, Docker/Podman, and orphaned app data.
 `cdm` is the whole program — `rules/*.json` is its data. There is no build step and no dependency
 manifest. Tests live in `tests/` and are plain bash with no framework behind them (see Commands).
@@ -89,7 +89,31 @@ cat cdm | bash -s -- -n
 `curl: (56) Failure writing output to destination` on a short-circuiting flag like `--help` is
 expected, not a bug: bash exits without draining the pipe and curl takes SIGPIPE.
 
+### Trying the sudo path by hand
+
+```bash
+sudo bash ./cdm -n                  # every account, from the file
+cat cdm | sudo bash -s -- -n        # every account, from stdin: the bootstrap copy
+sudo bash ./cdm -n --user NAME      # one account (repeat --user for more)
+```
+
+The tests never need root: `tests/test_accounts.sh` shadows `sudo`, `launchctl`, `dscl` and `id`
+with shell functions and asserts the argv root would run.
+
 ## Architecture
+
+### Under sudo: one run per account, never root
+
+Run as root, `cdm` deletes nothing itself. `run_accounts` stages a root-owned copy of the script and
+the rules in a fresh `/private/tmp/cdm.XXXXXX`, then runs that copy once per account (`account_rows`),
+as that account's own user (`as_account`), under `env -i` with only that account's `HOME`, `USER`,
+`LOGNAME`, `SHELL`, `PATH` (`account_path`), the terminal and locale variables and `CDM_ACCOUNT*` /
+`CDM_SUDO_BY`. Each is an ordinary run: same `is_safe_target`, its own log and Trash. Each run's
+stdin is root's fd 3, the terminal: with stdin from `/dev/null`, sudo starts the command as a
+background job of its pty, the run's first `stty` fails, and the run hangs before its menu. Root
+writes and deletes only inside its own `/private/tmp/cdm.XXXXXX`, never in a home. Under `curl … | sudo
+bash` the bootstrap block right after `set -u` first saves the rest of stdin to that folder. See
+`docs/DESIGN.md#sudo-accounts`.
 
 ### Rules are data; the script is an interpreter
 
@@ -146,9 +170,11 @@ writing docs, read a rule file first — this has been documented wrong before.
 `--patterns` → `<script-dir>/rules` → `<script-dir>/../rules` → `~/.cleandevmac/rules` →
 `$REMOTE_BASE` (raw main on GitHub).
 
-When piped from curl, **`BASH_SOURCE` is unset** (`$0` is `bash`), so the `*/*` case never matches,
-`self_dir` stays empty, both local branches are guarded by `[ -n "$self_dir" ]`, and it correctly
-falls through to the network. Don't "fix" that guard.
+When piped from curl, **`BASH_SOURCE` is unset** (`$0` is `bash`), so `script_dir_for`'s `*/*` case
+never matches, `self_dir` stays empty, both local branches are guarded by `[ -n "$self_dir" ]`, and
+it correctly falls through to the network. Don't "fix" that guard. `script_dir_for` also returns no
+folder for a script inside `$SCAN_DIR` — root's staged copy, whose `../rules` would be
+`/private/tmp/rules`, which any local user can create.
 
 ### JSON without jq or python
 
@@ -206,6 +232,16 @@ Under `curl … | bash`, fd 0 *is the script* and bash is still reading it. Redi
 the rest of the program and break the pipe. The script opens `/dev/tty` on fd 3, falls back to fd 0
 only when it's a terminal, and otherwise uses `/dev/null` so reads hit EOF (treated as "no answer")
 instead of consuming the script as keystrokes. Every interactive read uses `<&3`.
+
+Keys typed while cdm is busy (rule fetch, scan, deletions, rescan) are muted and then thrown away:
+`mute_keys` turns off echo and line mode, `unmute_keys` drains the queue and restores the terminal,
+and `cleanup_on_exit` restores it on every exit. A new prompt that follows slow work must only take
+keys typed after it is shown — call `drain_keys` before it. The menu loop drains once on entry, not
+before every read, so a held arrow key still repeats. `stty` is touched only for interactive runs
+with a terminal on fd 3 (a backgrounded `cdm -y &` would be stopped by SIGTTOU). The drain's `cat`
+must never meet line mode, where it waits for a whole line: `mute_keys` saves state only once its
+`stty` took (tried twice, since a job started in the background gets EINTR from the first), and
+`unmute_keys` sets MIN 0 TIME 0 again before draining. See `docs/DESIGN.md#typeahead`.
 
 ### The terminal *size* also comes from fd 3
 
